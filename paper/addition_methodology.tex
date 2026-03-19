@@ -1,0 +1,455 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath, amssymb, amsthm, bm}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{float}
+\usepackage{enumitem}
+\usepackage{hyperref}
+\usepackage{xcolor}
+
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\Tplan}{\mathbf{T}}
+\newcommand{\SiteCost}{\mathbf{C}^{S}}
+\newcommand{\AbsCost}{\mathbf{C}^{Z}}
+\newcommand{\CrossCost}{\mathbf{M}}
+\newcommand{\PlotRoot}{../results/REPLACE_WITH_TIMESTAMP}
+
+\title{Methodology for Addition Causal Abstraction Experiments}
+\author{Repo draft}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+This document describes the end-to-end methodology implemented in the addition experiment codebase. The setup trains a single supervised neural network for two-digit addition, constructs counterfactual abstract interventions from a symbolic structural causal model, and then compares optimal transport (OT), Gromov--Wasserstein (GW), fused Gromov--Wasserstein (FGW), and distributed alignment search (DAS) as mechanisms for mapping abstract variables to neural network sites. The notation is standardized around abstract variables $Z_m$ for $m=1,\dots,M$ and neural sites $S_n$ for $n=1,\dots,N$.
+\end{abstract}
+
+\section{Problem Setup}
+The input is a pair of base-10 two-digit integers. Each input digit is encoded as a one-hot vector in $\{0,1\}^{10}$, and the four digit vectors are concatenated, giving a neural input space
+\[
+x \in \{0,1\}^{40}.
+\]
+The structural causal model (SCM) contains the intermediate addition variables
+\[
+Z_1 = S_1,\quad Z_2 = C_1,\quad Z_3 = S_2,\quad Z_4 = C_2,
+\]
+where $S_1$ and $C_1$ are the sum and carry at the least significant digit, and $S_2$ and $C_2$ are the corresponding variables at the next digit after propagating $C_1$. By default the implementation considers all four abstract variables, so $M=4$.
+
+The final output is the full sum
+\[
+Y = 100 C_2 + 10 S_2 + S_1 \in \{0,\dots,199\},
+\]
+which is treated as a $200$-class classification problem.
+
+\section{Neural Model}
+The neural model is a four-hidden-layer ReLU multilayer perceptron with hidden width $192$ at every hidden layer:
+\[
+40 \rightarrow 192 \rightarrow 192 \rightarrow 192 \rightarrow 192 \rightarrow 200.
+\]
+Let $h^{(\ell)}(x) \in \R^{192}$ denote the hidden activation vector at layer $\ell \in \{1,2,3,4\}$. The output layer is followed by a softmax, and we absorb that softmax into the neural network map
+\[
+f_\theta(x) \in \Delta^{200},
+\]
+where $\Delta^{200}$ is the probability simplex over the $200$ output classes. The model is trained with multiclass cross-entropy loss.
+
+The default factual supervised protocol uses:
+\begin{itemize}[leftmargin=1.5em]
+\item $30{,}000$ training examples per seed,
+\item $4{,}000$ validation examples per seed,
+\item a fixed random seed that controls both factual and counterfactual data generation.
+\end{itemize}
+
+\section{Counterfactual Pair Protocol}
+After training the neural network, all abstraction methods operate on the same trained MLP and the same abstract variables $\{Z_m\}_{m=1}^M$. Counterfactual fitting is driven by a pair bank
+\[
+\mathcal{T} = \{(x_t^{b}, x_t^{s})\}_{t=1}^{T},
+\]
+where $x_t^{b}$ is the base input and $x_t^{s}$ is the source input. Let the abstract model be denoted by $g$. Then the factual abstract output is
+\[
+y_{t}^{abs} = g(x_t^{b}),
+\]
+and the abstract counterfactual output obtained by swapping variable $Z_m$ from the source world into the base world is
+\[
+y_{m,t}^{abs\text{-}swap}
+=
+g\!\bigl(x_t^{b}, \mathrm{do}(Z_m \leftarrow Z_m(x_t^{s}))\bigr).
+\]
+
+Let the neural network output on the factual base input be
+\[
+y_t^{nn} = f_\theta(x_t^{b}),
+\]
+and, for any replacement vector $\widetilde h \in \R^{d_\ell}$ at hidden layer $\ell$, write
+\[
+f_\theta\!\bigl(x_t^{b}, \mathrm{do}(h^{(\ell)}(x_t^b) \leftarrow \widetilde h)\bigr)
+\]
+for the output of the forward pass on $x_t^{b}$ in which the hidden activation at layer $\ell$ is overwritten by $\widetilde h$.
+
+The default pair splits are disjoint:
+\begin{itemize}[leftmargin=1.5em]
+\item train split $\mathcal{T}_{\mathrm{train}}$ with $48$ base/source pairs,
+\item calibration split $\mathcal{T}_{\mathrm{cal}}$ with $48$ base/source pairs,
+\item test split: $96$ base/source pairs.
+\end{itemize}
+
+These splits are used uniformly across methods:
+\begin{itemize}[leftmargin=1.5em]
+\item GW, OT, and FGW fit alignment statistics on $\mathcal{T}_{\mathrm{train}}$,
+\item GW, OT, and FGW then select per-variable top-$K_m$ truncation levels and per-variable $\lambda_m$ values on $\mathcal{T}_{\mathrm{cal}}$,
+\item DAS trains candidate rotations on $\mathcal{T}_{\mathrm{train}}$,
+\item DAS selects $(\text{layer}, k)$ on $\mathcal{T}_{\mathrm{cal}}$,
+\item final exact-match and digit-overlap metrics are reported on the shared test split.
+\end{itemize}
+
+At a high level, every method defines, for each abstract variable $Z_m$, an abstract-variable-level neural counterfactual output $y_{m,t}^{nn\text{-}swap}$ intended to approximate $y_{m,t}^{abs\text{-}swap}$. The methods differ only in how this neural intervention is parameterized, learned, or optimized.
+
+\section{Canonical-Basis Baseline}
+For the canonical-basis baseline, a candidate neural site $S_n$ is a coordinate subspace in a single hidden layer. Concretely, we write
+\[
+S_n = (\ell, I_n),
+\]
+where $\ell \in \{1,\dots,L\}$ is a hidden-layer index and $I_n \subseteq \{1,\dots,d_\ell\}$ is a subset of canonical coordinates in that layer. Single-neuron swaps are the special case $|I_n|=1$, but the canonical-basis baseline is not restricted to that case.
+
+For a candidate $S_n=(\ell,I_n)$, the intervened hidden state is
+\[
+h^{(\ell)}(x_t^b; S_n \leftarrow x_t^s)
+=
+h^{(\ell)}(x_t^b)
++
+\sum_{i \in I_n}
+\left(
+\bigl[h^{(\ell)}(x_t^s)\bigr]_i - \bigl[h^{(\ell)}(x_t^b)\bigr]_i
+\right)e_i,
+\]
+with all other layers left unchanged. The resulting neural output is
+\[
+y_{n,t}^{nn\text{-}swap}
+=
+f_\theta\!\Bigl(
+x_t^b,
+\mathrm{do}\bigl(
+h^{(\ell)}(x_t^b)
+\leftarrow
+h^{(\ell)}(x_t^b; S_n \leftarrow x_t^s)
+\bigr)
+\Bigr).
+\]
+For each abstract variable $Z_m$, we sweep over a prescribed family of canonical subspaces and retain the best-performing candidate. This gives a hard-swap baseline that uses the canonical basis directly, without learned rotations or transport weights.
+
+\section{DAS}
+For DAS, a candidate site is parameterized by a pair $(\ell,k)$, where $\ell \in \{1,\dots,L\}$ is a hidden-layer index and $k \in \{1,\dots,d_\ell\}$ is a subspace dimension. Here $d_\ell$ denotes the width of hidden layer $\ell$; in the default network, $L=4$ and $d_1=d_2=d_3=d_4=192$.
+
+The location of the $k$ coordinates does not matter in the canonical basis, because DAS learns a rotation matrix $R_\ell \in \R^{d_\ell \times d_\ell}$ for each layer. After rotation, the first $k$ coordinates define the intervened subspace. Thus DAS is choosing a layer and a subspace dimension, not a fixed canonical coordinate subset.
+
+For a candidate $(\ell,k)$, write the base and source hidden states at layer $\ell$ as $h^{(\ell)}(x_t^b)$ and $h^{(\ell)}(x_t^s)$. Define the corresponding rotated activations
+\[
+\widetilde{h}^{(\ell)}(x_t^b) = R_\ell h^{(\ell)}(x_t^b),\qquad
+\widetilde{h}^{(\ell)}(x_t^s) = R_\ell h^{(\ell)}(x_t^s),
+\]
+and swap the first $k$ rotated coordinates:
+\[
+\widetilde{h}^{(\ell)}(x_t^b; Z_m \leftarrow x_t^s)(1\!:\!k) = \widetilde{h}^{(\ell)}(x_t^s)(1\!:\!k),\qquad
+\widetilde{h}^{(\ell)}(x_t^b; Z_m \leftarrow x_t^s)(k\!+\!1\!:\!d_\ell) = \widetilde{h}^{(\ell)}(x_t^b)(k\!+\!1\!:\!d_\ell).
+\]
+Then rotate back:
+\[
+h^{(\ell)}(x_t^b; Z_m \leftarrow x_t^s)
+=
+R_\ell^{-1}\widetilde{h}^{(\ell)}(x_t^b; Z_m \leftarrow x_t^s).
+\]
+This produces a DAS neural counterfactual output
+\[
+y_{m,t}^{nn\text{-}swap}(\ell,k)
+=
+f_\theta\!\Bigl(
+x_t^b,
+\mathrm{do}\bigl(
+h^{(\ell)}(x_t^b)
+\leftarrow
+h^{(\ell)}(x_t^b; Z_m \leftarrow x_t^s)
+\bigr)
+\Bigr),
+\]
+where the intervened hidden state on the right-hand side is the rotated-subspace swap defined above for abstract variable $Z_m$ at layer $\ell$ and dimension $k$.
+The rotation parameters are trained on the train split with cross-entropy loss against the abstract counterfactual targets $y_{m,t}^{abs\text{-}swap}$, and the best $(\ell,k)$ is selected on the calibration split by interchange intervention accuracy.
+
+\section{Transport Methods}
+For OT, GW, and FGW, we instantiate the neural site family at resolution $1$, so each transport site is a single canonical neuron. Thus each site is a pair $(\ell,i)$ with neuron index $i \in \{1,\dots,d_\ell\}$ in hidden layer $\ell$. The total number of transport sites is therefore
+\[
+N = \sum_{\ell=1}^{L} d_\ell.
+\]
+We write $S_n \equiv (\ell,i)$ when transport-site index $n$ corresponds to neuron $i$ in layer $\ell$.
+
+\subsection{Effect Signatures}
+For abstract variable $Z_m$, the abstract effect on example $t$ is
+\[
+\delta_{m,t}^{abs}
+=
+\mathrm{onehot}(y_{m,t}^{abs\text{-}swap}) - \mathrm{onehot}(y_t^{abs}),
+\]
+which lies in $\R^{200}$. Concatenating across the $T$ fit pairs gives the abstract signature
+\[
+u_m^{abs}
+=
+\bigl[\delta_{m,1}^{abs}; \dots; \delta_{m,T}^{abs}\bigr]
+\in \R^{200T}.
+\]
+
+For canonical site $S_n$, the neural effect on example $t$ is
+\[
+\delta_{n,t}^{nn}
+=
+y_{n,t}^{nn\text{-}swap} - y_t^{nn},
+\]
+which also lies in $\R^{200}$. Concatenating these over the $T$ fit pairs gives the neural signature
+\[
+v_n^{nn}
+=
+\bigl[\delta_{n,1}^{nn}; \dots; \delta_{n,T}^{nn}\bigr]
+\in \R^{200T}.
+\]
+
+\subsection{Metric-Measure Spaces and Alignment Objectives}
+Define the abstract metric-measure space
+\[
+\mathcal{X}^{abs}
+=
+\bigl(\{u_m^{abs}\}_{m=1}^{M}, d^{abs}, p\bigr),
+\]
+where
+\[
+d^{abs}(u_m^{abs}, u_{m'}^{abs}) = \|u_m^{abs} - u_{m'}^{abs}\|_2,
+\qquad
+p_m = \frac{1}{M}.
+\]
+Similarly, define the neural metric-measure space
+\[
+\mathcal{X}^{nn}
+=
+\bigl(\{v_n^{nn}\}_{n=1}^{N}, d^{nn}, q\bigr),
+\]
+where
+\[
+d^{nn}(v_n^{nn}, v_{n'}^{nn}) = \|v_n^{nn} - v_{n'}^{nn}\|_2,
+\qquad
+q_n = \frac{1}{N}.
+\]
+
+Direct OT uses the cross-space cost matrix
+\[
+\CrossCost_{m,n} = \|u_m^{abs} - v_n^{nn}\|_2
+\]
+and solves
+\[
+\min_{\Tplan \in \Pi(p,q)} \langle \Tplan, \CrossCost \rangle.
+\]
+With entropic regularization, this becomes
+\[
+\min_{\Tplan \in \Pi(p,q)} \langle \Tplan, \CrossCost \rangle
++ \varepsilon \sum_{m,n} \Tplan_{m,n}(\log \Tplan_{m,n} - 1).
+\]
+
+GW instead compares the internal geometries of the two spaces. Define
+\[
+\AbsCost_{m,m'} = d^{abs}(u_m^{abs}, u_{m'}^{abs}) = \|u_m^{abs} - u_{m'}^{abs}\|_2,
+\]
+\[
+\SiteCost_{n,n'} = d^{nn}(v_n^{nn}, v_{n'}^{nn}) = \|v_n^{nn} - v_{n'}^{nn}\|_2.
+\]
+GW then solves
+\[
+\min_{\Tplan \in \Pi(p,q)}
+\sum_{m,m',n,n'}
+L\!\left(\AbsCost_{m,m'}, \SiteCost_{n,n'}\right)\,
+\Tplan_{m,n}\Tplan_{m',n'},
+\]
+with $L(a,b)=(a-b)^2$.
+
+FGW interpolates between the direct OT cost and the GW structural cost:
+\[
+\min_{\Tplan \in \Pi(p,q)}
+(1-\alpha)\langle \Tplan, \CrossCost \rangle
++
+\alpha
+\sum_{m,m',n,n'}
+L\!\left(\AbsCost_{m,m'}, \SiteCost_{n,n'}\right)\,
+\Tplan_{m,n}\Tplan_{m',n'}.
+\]
+Implementation note: the current code uses POT's \texttt{ot.sinkhorn}, \texttt{ot.gromov.entropic\_gromov\_wasserstein}, and \texttt{ot.gromov.BAPG\_fused\_gromov\_wasserstein} for OT, GW, and FGW respectively.
+
+\subsection{Transport-Induced Neural Swap}
+For OT, GW, and FGW, the learned transport plan is converted into a soft intervention after a calibration-stage truncation-and-scaling sweep. For abstract variable $Z_m$, let
+\[
+\bar{\Tplan}_{m,n}
+=
+\frac{\Tplan_{m,n}}{\sum_{n'} \Tplan_{m,n'}}
+\]
+denote the row-normalized transport weights over canonical neural sites.
+
+For a chosen top-$K_m$ value for row $m$, let $\mathrm{TopK}_m$ be the set of the $K_m$ highest-mass sites in row $m$ of $\bar{\Tplan}$. The retained mass is then renormalized within that row:
+\[
+\widetilde{\Tplan}_{m,n}
+=
+\frac{\mathbf{1}[n \in \mathrm{TopK}_m]\bar{\Tplan}_{m,n}}
+{\sum_{n'} \mathbf{1}[n' \in \mathrm{TopK}_m]\bar{\Tplan}_{m,n'}}.
+\]
+Let $\lambda_m > 0$ be the intervention-strength parameter selected for abstract variable $Z_m$.
+
+Using the identification $S_n \equiv (\ell,i)$, the transport-based intervention at layer $\ell$ is
+\[
+h^{(\ell)}(x_t^b; Z_m \leftarrow x_t^s)
+=
+h^{(\ell)}(x_t^b)
++
+\sum_{i=1}^{d_\ell}
+\lambda_m \,
+\widetilde{\Tplan}_{m,(\ell,i)}
+\left(
+\bigl[h^{(\ell)}(x_t^s)\bigr]_i - \bigl[h^{(\ell)}(x_t^b)\bigr]_i
+\right)e_i.
+\]
+This is applied sequentially across all hidden layers, yielding the abstract-variable-level neural counterfactual output
+\[
+y_{m,t}^{nn\text{-}swap}
+=
+f_\theta\!\Bigl(
+x_t^b,
+\mathrm{do}\bigl(
+h^{(1)}(x_t^b) \leftarrow h^{(1)}(x_t^b; Z_m \leftarrow x_t^s), \dots,
+h^{(L)}(x_t^b) \leftarrow h^{(L)}(x_t^b; Z_m \leftarrow x_t^s)
+\bigr)
+\Bigr),
+\]
+where each layerwise intervened hidden state is the soft transport swap defined above for abstract variable $Z_m$.
+For each abstract variable $Z_m$, the code selects the pair $(K_m,\lambda_m)$ directly on the calibration split by exact-match accuracy, with shared-digit score used as a tie-breaker. Thus, the canonical-basis baseline, OT, GW, and FGW all modify the same object: they differ only in how the site weights are specified. The baseline uses a single hard site swap, while OT, GW, and FGW learn soft site weights through the transport plan and then calibrate how much of that mass to apply.
+
+\section{Evaluation Metrics}
+Two metrics are reported on the shared test split.
+
+\subsection{Exact-match accuracy}
+Let $\widehat{y}_{m,t}^{nn\text{-}swap}$ be the predicted counterfactual class for abstract variable $Z_m$ on pair $t$, obtained by taking the argmax of the intervened neural output. Exact-match accuracy is
+\[
+\mathrm{Acc}_{\mathrm{exact}}(Z_m)
+=
+\frac{1}{N_{\mathrm{test}}}
+\sum_{t=1}^{N_{\mathrm{test}}}
+\mathbf{1}\!\left[\widehat{y}_{m,t}^{nn\text{-}swap} = y_{m,t}^{abs\text{-}swap}\right].
+\]
+
+\subsection{Digit Accuracy}
+Each output class is represented as a zero-padded three-digit tuple
+\[
+(C_2, S_2, S_1).
+\]
+Let $d_p(y)$ denote the $p$th digit of this tuple, for $p \in \{1,2,3\}$. The per-example digit accuracy is
+\[
+\mathrm{Acc}_{\mathrm{digit}}(\widehat{y}, y)
+=
+\frac{1}{3}
+\sum_{p=1}^{3}
+\mathbf{1}\!\left[d_p(\widehat{y}) = d_p(y)\right].
+\]
+The reported digit score for abstract variable $Z_m$ is then
+\[
+\mathrm{Acc}_{\mathrm{digit}}(Z_m)
+=
+\frac{1}{N_{\mathrm{test}}}
+\sum_{t=1}^{N_{\mathrm{test}}}
+\mathrm{Acc}_{\mathrm{digit}}\!\left(\widehat{y}_{m,t}^{nn\text{-}swap}, y_{m,t}^{abs\text{-}swap}\right).
+\]
+Equivalently, the code can report the mean number of shared digits, which is just $3 \cdot \mathrm{Acc}_{\mathrm{digit}}(Z_m)$.
+
+\section{Default Experimental Configuration}
+The codebase defaults are therefore:
+\begin{itemize}[leftmargin=1.5em]
+\item input dimension $40$,
+\item output dimension $200$,
+\item four hidden layers with width $192$ and ReLU activations,
+\item factual train/validation sizes $30{,}000 / 4{,}000$,
+\item counterfactual train/calibration/test sizes $48 / 48 / 96$,
+\item default abstract variables $\{S_1,C_1,S_2,C_2\}$,
+\item default OT/GW/FGW canonical sites use resolution $1$, so $N = \sum_{\ell=1}^{L} d_\ell$,
+\item default OT/GW/FGW calibration sweep uses $\lambda \in \{0.5, 0.75, 1.0, 1.25, 1.5\}$ and a top-$K$ grid over every integer value from $1$ up to the full site count, applied independently to each abstract-variable row,
+\item default DAS sweep over all subspace sizes $k=1,\dots,192$ for every layer.
+\end{itemize}
+
+\section{Experimental Results}
+The repository's main comparison script writes JSON output to
+\texttt{results/<timestamp>/addition\_compare\_results.json} and plot images
+directly into \texttt{results/<timestamp>/}. To compile this draft against a
+real run, update \texttt{\textbackslash PlotRoot} near the top of the file to
+the desired timestamped results directory. These figures are intended as a
+paper scaffold: they demonstrate the reporting format and can be replaced by
+larger multi-seed plots later without changing the LaTeX structure.
+
+\begin{figure}[H]
+\centering
+\IfFileExists{\PlotRoot/exact_accuracy.png}{
+    \includegraphics[width=0.9\textwidth]{\PlotRoot/exact_accuracy.png}
+}{
+    \fbox{\parbox{0.85\textwidth}{Missing plot: \texttt{\PlotRoot/exact\_accuracy.png}}}
+}
+\caption{Per-variable exact-match accuracy for GW, OT, FGW, and DAS on the shared counterfactual test split.}
+\label{fig:exact-accuracy}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\IfFileExists{\PlotRoot/shared_digits.png}{
+    \includegraphics[width=0.9\textwidth]{\PlotRoot/shared_digits.png}
+}{
+    \fbox{\parbox{0.85\textwidth}{Missing plot: \texttt{\PlotRoot/shared\_digits.png}}}
+}
+\caption{Per-variable mean digit-overlap score, computed on zero-padded output triples $(C_2,S_2,S_1)$.}
+\label{fig:shared-digits}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\IfFileExists{\PlotRoot/macro_summary.png}{
+    \includegraphics[width=0.75\textwidth]{\PlotRoot/macro_summary.png}
+}{
+    \fbox{\parbox{0.7\textwidth}{Missing plot: \texttt{\PlotRoot/macro\_summary.png}}}
+}
+\caption{Macro summary aggregated over the default abstract-variable set.}
+\label{fig:macro-summary}
+\end{figure}
+
+\section{How to Regenerate the Figures}
+The main experiment scripts are now meant to be edited directly rather than configured via command-line flags. In practice, the workflow is:
+\begin{enumerate}[leftmargin=1.5em]
+\item edit the config block near the top of \texttt{addition\_train.py},
+\item run \texttt{python addition\_train.py},
+\item edit the config block near the top of \texttt{addition\_compare.py},
+\item run \texttt{python addition\_compare.py}.
+\end{enumerate}
+
+The current default script settings are equivalent to:
+\begin{verbatim}
+addition_train.py:
+  CHECKPOINT_PATH = "models/addition_mlp.pt"
+  OUTPUT_PATH = "results/<timestamp>/addition_train_results.json"
+  TRAIN_SIZE = 30000
+  VALIDATION_SIZE = 4000
+  HIDDEN_DIMS = (192, 192, 192, 192)
+  EPOCHS = 100
+
+addition_compare.py:
+  CHECKPOINT_PATH = "models/addition_mlp.pt"
+  OUTPUT_PATH = "results/<timestamp>/addition_compare_results.json"
+  METHODS = ("gw", "ot", "fgw", "das")
+  TRAIN_PAIR_SIZE = 48
+  CALIBRATION_PAIR_SIZE = 48
+  TEST_PAIR_SIZE = 96
+  RESOLUTION = 1
+  OT_TOP_K_VALUES = (1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 768)
+  OT_LAMBDAS = (0.5, 0.75, 1.0, 1.25, 1.5)
+  DAS_SUBSPACE_DIMS = (1, 16, 32, 48, 64, 80, 96, 112, 128, 144, 160, 176, 192)
+  DAS_LAYERS = (0, 1, 2, 3)
+  DAS_MAX_EPOCHS = 5
+\end{verbatim}
+
+\end{document}

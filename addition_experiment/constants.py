@@ -1,0 +1,33 @@
+"""Central experiment defaults shared across training and intervention code."""
+
+from pathlib import Path
+
+
+DEFAULT_CHECKPOINT_PATH = Path("models/addition_mlp.pt")
+
+DEFAULT_TARGET_VARS = ("S1", "C1", "S2", "C2")
+CANONICAL_INPUT_VARS = ("A1", "B1", "A2", "B2")
+VAR_VALUE_SPACE = {
+    "S1": tuple(range(10)),
+    "C1": (0, 1),
+    "S2": tuple(range(10)),
+    "C2": (0, 1),
+}
+
+INPUT_DIM = 40
+NUM_CLASSES = 200
+OUTPUT_DIGIT_COUNT = 3
+
+DEFAULT_HIDDEN_DIMS = (192, 192, 192, 192)
+DEFAULT_DROPOUT = 0.0
+DEFAULT_ACTIVATION = "relu"
+
+DEFAULT_FACTUAL_TRAIN_SIZE = 30_000
+DEFAULT_FACTUAL_VALIDATION_SIZE = 4_000
+DEFAULT_PAIR_TRAIN_SIZE = 48
+DEFAULT_PAIR_TEST_SIZE = 96
+DEFAULT_ALIGNMENT_RESOLUTION = 1
+
+DEFAULT_SITE_UNIT = "pos"
+DEFAULT_SITE_POSITION = 0
+DEFAULT_SITE_MAX_UNITS = 1

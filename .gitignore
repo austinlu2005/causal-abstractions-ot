@@ -1,0 +1,19 @@
+deprecated/
+__pycache__/
+addition_experiment/__pycache__/
+tests/__pycache__/
+results/
+.DS_Store
+
+# LaTeX build artifacts
+paper/*.aux
+paper/*.fdb_latexmk
+paper/*.fls
+paper/*.log
+paper/*.out
+paper/*.synctex.gz
+paper/*.toc
+paper/*.lof
+paper/*.lot
+paper/*.bbl
+paper/*.blg
