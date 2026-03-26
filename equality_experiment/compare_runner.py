@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from time import perf_counter
 
-from addition_experiment.ot import OTConfig, run_alignment_pipeline
+from .ot import OTConfig, run_alignment_pipeline
 
 from .backbone import EqualityTrainConfig, load_backbone
 from .constants import (
@@ -170,7 +170,6 @@ def _build_summary_lines(
         summary_lines.append(
             f"{str(record['method']).upper()}: "
             f"exact={float(record['exact_acc']):.4f}, "
-            f"shared={float(record['mean_shared_digits']):.4f}, "
             f"runtime_s={float(method_runtime_seconds.get(str(record['method']), 0.0)):.2f}"
         )
     candidate_sections = []
@@ -234,6 +233,28 @@ def run_comparison_with_model(
         mixed_positive_fraction=config.test_mixed_positive_fraction,
         pair_pool_size=config.test_pair_pool_size,
     )
+    return run_comparison_with_banks(
+        model=model,
+        backbone_meta=backbone_meta,
+        device=device,
+        config=config,
+        train_bank=train_bank,
+        calibration_bank=calibration_bank,
+        test_bank=test_bank,
+    )
+
+
+def run_comparison_with_banks(
+    *,
+    model,
+    backbone_meta: dict[str, object],
+    device,
+    config: CompareExperimentConfig,
+    train_bank,
+    calibration_bank,
+    test_bank,
+) -> dict[str, object]:
+    """Run the shared OT/DAS alignment evaluation from prebuilt pair-bank splits."""
 
     method_payloads: dict[str, dict[str, object]] = {}
     method_runtime_seconds: dict[str, float] = {}
