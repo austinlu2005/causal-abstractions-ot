@@ -1,6 +1,7 @@
 deprecated/
 __pycache__/
 addition_experiment/__pycache__/
+tests/
 tests/__pycache__/
 .vscode/
 models/
