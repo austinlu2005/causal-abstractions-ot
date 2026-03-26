@@ -1,70 +1,136 @@
-# Causal Abstractions for Two-Digit Addition
+# Causal Abstractions for Addition and Hierarchical Equality
 
-This repo is now organized around Python experiment scripts rather than notebooks.
-The active workflow trains a shared MLP for two-digit addition, builds symbolic
-counterfactual pair banks from an SCM, and compares multiple causal abstraction
-methods on the same held-out counterfactual test split.
+This repo is organized around Python experiment scripts rather than notebooks.
+It currently supports two task families:
+
+- two-digit addition
+- hierarchical equality (the `WX`, `YZ`, `O` task)
+
+Both pipelines follow the same high-level pattern:
+
+- train or load a backbone MLP
+- build symbolic counterfactual pair banks from an SCM
+- compare transport-based alignment methods and DAS on held-out counterfactual data
 
 ## Main Entry Points
 
+### Addition
+
 - `addition_train.py`
-  - Trains the base MLP and writes a checkpoint plus factual validation metrics.
+  - Trains the addition MLP and writes a checkpoint plus factual validation metrics.
 - `addition_run.py`
-  - Trains or reuses one checkpoint per seed, then runs the full comparison pipeline for each seed.
-  - Writes per-seed comparison artifacts plus one aggregate JSON/text summary and cross-seed plots for both accuracy and method runtime.
+  - Loads one checkpoint per seed and runs the comparison pipeline.
+  - Supports sweeps over OT `epsilon` and Gibbs-kernel `tau`.
+  - Writes per-sweep and aggregate summaries under `results/<timestamp>_addition/`.
 - `addition_run_gradient.py`
-  - Trains or reuses one checkpoint per seed, then runs OT/GW/FGW with gradient-based single-layer policy search.
-  - Optimizes a continuous within-layer cutoff and intervention strength on the calibration bank, then evaluates a hard single-layer top-k policy on holdout.
+  - Runs the gradient-based transport-policy variant for the addition task.
+
+### Hierarchical Equality
+
+- `equality_run.py`
+  - Trains or loads the equality MLP, builds one fixed set of train/calibration/test pair banks, and runs the comparison pipeline.
+  - Supports OT-only sweeps over `epsilon` and Gibbs-kernel `tau` while reusing the same pair-bank splits across sweep points.
+  - Writes outputs under `results/<timestamp>_equality/`.
 
 These scripts are meant to be edited directly. The config block near the top of
 each file is the intended control surface.
 
-## Current Default Experimental Spec
+## Tasks
+
+### Addition Task
 
 - Input:
   - Two 2-digit numbers encoded as concatenated one-hot digit vectors.
   - Input dimension is `40`.
 - Abstract variables:
-  - By default all four internal addition variables are used:
-    - `S1`, `C1`, `S2`, `C2`
+  - `S1`, `C1`, `S2`, `C2`
 - Output:
-  - `200`-class classification over sums `0..199`.
-- Neural model:
-  - Four-hidden-layer ReLU MLP with hidden width `192`.
-- Factual supervised data:
-  - `30,000` training examples
-  - `4,000` validation examples
-- Counterfactual pair splits:
-  - train `1,000`
-  - calibration `1,000`
-  - test `5,000`
-- GW / OT / FGW sites:
-  - By default collect one site per neuron across all hidden layers
-  - Controlled by a `RESOLUTION` parameter
-  - `RESOLUTION = 1` means one neuron per site
-  - `RESOLUTION = 2` means adjacent pairs, etc.
-  - Fit transport on the train split, then choose both `top_k` and `lambda` separately for each abstract variable on the calibration split
-  - After truncation, renormalize each selected row to sum to `1`
-- DAS search:
-  - Sweeps intervention dimensionalities within each layer
-  - The default top-level scripts sweep `k` every 16 neurons plus `1`
-  - Trains on the train split and selects the best `(layer, k)` on the calibration split
+  - `200`-class classification over sums `0..199`
+- Default backbone:
+  - ReLU MLP with hidden width `192`
+
+### Hierarchical Equality Task
+
+- Input:
+  - Four entity slots `W, X, Y, Z`, each represented by an `EMBEDDING_DIM` vector
+- Abstract variables:
+  - `WX = [W == X]`
+  - `YZ = [Y == Z]`
+- Output:
+  - binary label `O = int(WX == YZ)`
+- Default backbone:
+  - ReLU MLP with hidden widths `(16, 16, 16)`
+
+The equality task is implemented in `equality_experiment/` and is intended to
+mirror the notebook’s causal structure while using the same repo-style pipeline
+for single-variable DAS and OT/GW/FGW evaluation.
+
+## Methods Implemented
+
+- `gw`
+  - Entropic Gromov-Wasserstein on relational effect geometry
+- `ot`
+  - Entropic optimal transport on direct abstract-to-neural signature costs
+- `fgw`
+  - Fused Gromov-Wasserstein
+- `das`
+  - Rotated-space intervention search with calibration-based model selection
+
+For OT-family methods, both experiment runners now expose:
+
+- `OT_EPSILONS`
+  - entropic regularization sweep
+- `OT_TAUS`
+  - Gibbs-kernel temperature sweep
+
+The current implementation uses `epsilon * tau` as the effective entropic scale
+inside the transport solve, so:
+
+- smaller `tau` sharpens the kernel
+- larger `tau` smooths the kernel
+
+## Outputs and Metrics
+
+All runs write JSON outputs, text summaries, and plots under `results/`.
+
+Top-level text summaries include:
+
+- the relevant experiment hyperparameters
+- per-split pair-bank change statistics such as:
+  - total pairs
+  - `changed_any`
+  - per-variable changed counts and rates
+
+### Addition Metrics
+
+- `exact_acc`
+  - predicted counterfactual sum matches exactly
+- `mean_shared_digits`
+  - average number of matching digits in `(C2, S2, S1)`
+
+### Equality Metrics
+
+- `exact_acc`
+  - predicted counterfactual binary label matches exactly
+
+The equality pipeline does not report a separate `shared` metric.
 
 ## Repository Layout
 
 - `addition_experiment/`
-  - Shared implementation modules for SCMs, pair banks, metrics, pyvene
-    utilities, GW/OT/FGW alignment, DAS, plotting, and backbone training.
+  - task-specific implementation for addition SCMs, pair banks, backbone training, OT/GW/FGW, DAS, reporting, and plotting
+- `equality_experiment/`
+  - task-specific implementation for hierarchical equality
 - `models/`
-  - Shared checkpoint location for `addition_mlp_seed<seed>.pt`.
+  - checkpoint storage such as `addition_mlp_seed<seed>.pt` and `equality_mlp_seed<seed>.pt`
 - `results/`
-  - Timestamped run folders containing compact JSON outputs, plain-text summaries, and generated plots.
+  - timestamped run folders like `results/<timestamp>_addition/` and `results/<timestamp>_equality/`
 - `paper/`
-  - Draft paper materials, including `addition_methodology.tex`.
-- `deprecated/`
-  - Old notebook-based experiments kept only for reference.
+  - draft paper materials
 
 ## Typical Workflow
+
+### Addition
 
 1. Edit the config block in `addition_train.py`.
 2. Run:
@@ -80,67 +146,29 @@ python addition_train.py
 python addition_run.py
 ```
 
-For the gradient-based transport-policy workflow, edit the config block in `addition_run_gradient.py` and run:
+For the gradient-based transport-policy workflow:
 
 ```bash
 python addition_run_gradient.py
 ```
 
-5. Inspect:
-  - JSON results under `results/<timestamp>/`
-  - plain-text summaries under `results/<timestamp>/`
-  - plot images directly under `results/<timestamp>/`
+### Hierarchical Equality
 
-This keeps all hyperparameters fixed except `seed`, trains a different backbone
-for each seed, reuses `models/addition_mlp_seed<seed>.pt` if present unless
-`RETRAIN_BACKBONES = True`, and writes aggregate cross-seed plots into the
-top-level sweep run directory.
+1. Edit the config block in `equality_run.py`.
+2. Run:
 
-To run only some methods, edit `METHODS` in `addition_run.py`, for example:
-
-```python
-METHODS = ("ot",)
+```bash
+python equality_run.py
 ```
 
-## Methods Implemented
+Depending on `RETRAIN_BACKBONE`, this will either train a fresh equality
+backbone or load `models/equality_mlp_seed<seed>.pt`.
 
-- `gw`
-  - Entropic Gromov-Wasserstein on relational effect geometry.
-- `ot`
-  - Entropic optimal transport on direct abstract-to-neural signature costs.
-- `fgw`
-  - Fused Gromov-Wasserstein using
-    `ot.gromov.BAPG_fused_gromov_wasserstein`.
-- `das`
-  - Rotated-space intervention search with model selection on a dedicated calibration bank.
+## Notes on the Equality Pipeline
 
-All methods are evaluated on the same:
-
-- trained MLP
-- abstract variable set
-- pair-bank split protocol
-- exact-match metric
-- shared-digit metric
-
-## Metrics
-
-- `exact_acc`
-  - Whether the predicted counterfactual output matches the true output exactly.
-- `mean_shared_digits`
-  - Number of matching digits in the zero-padded output triple `(C2, S2, S1)`,
-    averaged over examples.
-
-## Paper Draft
-
-The main methodology writeup is:
-
-- `paper/addition_methodology.tex`
-
-It documents the SCM, neural model, pair-bank protocol, OT/GW/FGW objectives,
-DAS procedure, and figure paths used by the current repo.
-
-## Deprecated Material
-
-The older notebook workflow is still kept in:
-
-- `deprecated/`
+- Equality OT epsilon/tau sweeps reuse a single prebuilt train/calibration/test
+  pair-bank split so different sweep points are directly comparable.
+- If `METHODS` includes both OT-family methods and `das`, the non-OT methods run
+  once outside the epsilon/tau sweep.
+- The equality task currently uses its own task-specific OT, DAS, reporting, and
+  pair-bank code rather than sharing those files with the addition task.
