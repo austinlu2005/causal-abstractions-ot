@@ -183,14 +183,14 @@ def solve_gw_transport(
     last_transport = None
     last_log = None
     for multiplier in config.epsilon_retry_multipliers:
-        epsilon = config.epsilon * config.tau * multiplier
+        regularization = config.tau * multiplier
         transport, log = ot.gromov.entropic_gromov_wasserstein(
             cost_var,
             cost_site,
             p,
             q,
             loss_fun="square_loss",
-            epsilon=epsilon,
+            epsilon=regularization,
             max_iter=config.max_iter,
             tol=config.tol,
             log=True,
@@ -199,8 +199,18 @@ def solve_gw_transport(
         last_transport = transport
         last_log = log
         if np.isfinite(transport).all() and float(np.sum(transport)) > 0.0:
-            return transport, {"method": "gw", "epsilon_used": epsilon, "tau_used": config.tau}
-    return last_transport, {"method": "gw_degenerate", "tau_used": config.tau, "log": last_log}
+            return transport, {
+                "method": "gw",
+                "regularization_used": regularization,
+                "tau_used": config.tau,
+                "epsilon_config": config.epsilon,
+            }
+    return last_transport, {
+        "method": "gw_degenerate",
+        "tau_used": config.tau,
+        "epsilon_config": config.epsilon,
+        "log": last_log,
+    }
 
 
 def solve_ot_transport(
@@ -212,20 +222,29 @@ def solve_ot_transport(
     """Solve the entropic optimal transport problem on direct costs."""
     last_transport = None
     for multiplier in config.epsilon_retry_multipliers:
-        epsilon = config.epsilon * config.tau * multiplier
+        regularization = config.tau * multiplier
         transport = ot.sinkhorn(
             p,
             q,
             cost_cross,
-            reg=epsilon,
+            reg=regularization,
             numItermax=config.max_iter,
             stopThr=config.tol,
             verbose=config.verbose,
         )
         last_transport = transport
         if np.isfinite(transport).all() and float(np.sum(transport)) > 0.0:
-            return transport, {"method": "ot", "epsilon_used": epsilon, "tau_used": config.tau}
-    return last_transport, {"method": "ot_degenerate", "tau_used": config.tau}
+            return transport, {
+                "method": "ot",
+                "regularization_used": regularization,
+                "tau_used": config.tau,
+                "epsilon_config": config.epsilon,
+            }
+    return last_transport, {
+        "method": "ot_degenerate",
+        "tau_used": config.tau,
+        "epsilon_config": config.epsilon,
+    }
 
 
 def solve_fgw_transport(
@@ -240,7 +259,7 @@ def solve_fgw_transport(
     last_transport = None
     last_log = None
     for multiplier in config.epsilon_retry_multipliers:
-        epsilon = config.epsilon * config.tau * multiplier
+        regularization = config.tau * multiplier
         transport, log = ot.gromov.BAPG_fused_gromov_wasserstein(
             cost_cross,
             cost_var,
@@ -248,7 +267,7 @@ def solve_fgw_transport(
             p=p,
             q=q,
             loss_fun="square_loss",
-            epsilon=epsilon,
+            epsilon=regularization,
             alpha=config.alpha,
             max_iter=config.max_iter,
             tol=config.tol,
@@ -258,8 +277,20 @@ def solve_fgw_transport(
         last_transport = transport
         last_log = log
         if np.isfinite(transport).all() and float(np.sum(transport)) > 0.0:
-            return transport, {"method": "fgw", "epsilon_used": epsilon, "tau_used": config.tau, "alpha": config.alpha}
-    return last_transport, {"method": "fgw_degenerate", "tau_used": config.tau, "alpha": config.alpha, "log": last_log}
+            return transport, {
+                "method": "fgw",
+                "regularization_used": regularization,
+                "tau_used": config.tau,
+                "epsilon_config": config.epsilon,
+                "alpha": config.alpha,
+            }
+    return last_transport, {
+        "method": "fgw_degenerate",
+        "tau_used": config.tau,
+        "epsilon_config": config.epsilon,
+        "alpha": config.alpha,
+        "log": last_log,
+    }
 
 
 def build_rankings(

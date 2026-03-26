@@ -83,8 +83,8 @@ For OT-family methods, both experiment runners now expose:
 - `OT_TAUS`
   - Gibbs-kernel temperature sweep
 
-The current implementation uses `epsilon * tau` as the effective entropic scale
-inside the transport solve, so:
+The current implementation uses `tau` directly as the entropic denominator in
+the transport solve, so:
 
 - smaller `tau` sharpens the kernel
 - larger `tau` smooths the kernel
