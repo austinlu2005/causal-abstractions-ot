@@ -1,9 +1,10 @@
 # Causal Abstractions for Addition and Hierarchical Equality
 
 This repo is organized around Python experiment scripts rather than notebooks.
-It currently supports two task families:
+It currently supports three task families:
 
 - two-digit addition
+- three-bit binary addition with a fixed `C1` carry benchmark
 - hierarchical equality (the `WX`, `YZ`, `O` task)
 
 Both pipelines follow the same high-level pattern:
@@ -13,6 +14,17 @@ Both pipelines follow the same high-level pattern:
 - compare transport-based alignment methods and DAS on held-out counterfactual data
 
 ## Main Entry Points
+
+### Binary Addition (`C1`)
+
+- `binary_addition_train.py`
+  - Trains or loads the fixed factual MLP used in the binary carry benchmark.
+- `binary_addition_das.py`
+  - Runs DAS sweeps over layer, subspace size, learning rate, and calibration strategy.
+- `binary_addition_ot_uot.py`
+  - Runs OT and UOT sweeps over entropic regularization, support size, intervention strength, site resolution, and calibration strategy.
+- `binary_addition_plots.py`
+  - Produces the binary-addition accuracy, runtime, and cross-layer plots from the DAS and OT/UOT result JSON files.
 
 ### Addition
 
@@ -48,6 +60,18 @@ each file is the intended control surface.
   - `200`-class classification over sums `0..199`
 - Default backbone:
   - ReLU MLP with hidden width `192`
+
+### Binary Addition Task
+
+- Input:
+  - Two 3-bit numbers encoded as concatenated one-hot bit vectors.
+  - Input dimension is `12`.
+- Abstract variable:
+  - `C1`, the carry from the least significant bit.
+- Output:
+  - `16`-class classification over 4-bit sums `0..15`.
+- Default backbone:
+  - ReLU MLP with hidden widths `(13, 13)`
 
 ### Hierarchical Equality Task
 
@@ -150,6 +174,32 @@ For the gradient-based transport-policy workflow:
 
 ```bash
 python addition_run_gradient.py
+```
+
+### Binary Addition
+
+1. Train or load the fixed factual model:
+
+```bash
+python binary_addition_train.py
+```
+
+2. Run the DAS sweep:
+
+```bash
+python binary_addition_das.py
+```
+
+3. Run the OT/UOT sweep:
+
+```bash
+python binary_addition_ot_uot.py
+```
+
+4. Generate the paper plots:
+
+```bash
+python binary_addition_plots.py --das-results <path-to-das_results.json> --ot-results <path-to-ot_uot_results.json>
 ```
 
 ### Hierarchical Equality
