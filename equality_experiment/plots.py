@@ -53,6 +53,8 @@ def save_comparison_plots(
 
     records = list(payload.get("results", []))
     summary = list(payload.get("method_summary", []))
+    stem = output_path.stem
+    prefix = "" if stem == "equality_run_results" else f"{stem}__"
 
     exact_by_method = _group_records(records, "exact_acc")
     methods = sorted(exact_by_method.keys())
@@ -60,7 +62,7 @@ def save_comparison_plots(
     x = np.arange(len(variables))
     width = 0.8 / max(len(methods), 1)
 
-    exact_path = plot_dir / "exact_accuracy.png"
+    exact_path = plot_dir / f"{prefix}exact_accuracy.png"
     fig, ax = plt.subplots(figsize=(8, 4.5), constrained_layout=True)
     for idx, method in enumerate(methods):
         y = [exact_by_method.get(method, {}).get(variable, np.nan) for variable in variables]
@@ -81,7 +83,7 @@ def save_comparison_plots(
     fig.savefig(exact_path, dpi=200)
     plt.close(fig)
 
-    summary_path = plot_dir / "average_summary.png"
+    summary_path = plot_dir / f"{prefix}average_summary.png"
     fig, ax = plt.subplots(figsize=(8, 4.5), constrained_layout=True)
     summary_methods = [str(record["method"]).upper() for record in summary]
     summary_exact = [float(record["exact_acc"]) for record in summary]

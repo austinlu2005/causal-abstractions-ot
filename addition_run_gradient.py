@@ -25,7 +25,7 @@ from addition_experiment.seed_sweep import (
 )
 
 
-SEEDS = (42,)
+SEEDS = [42]
 DEVICE = "mps"
 RUN_TIMESTAMP = os.environ.get("RESULTS_TIMESTAMP") or datetime.now().strftime("%Y%m%d_%H%M%S")
 RUN_DIR = Path("results") / f"{RUN_TIMESTAMP}_addition_gradient"
@@ -35,13 +35,13 @@ SUMMARY_PATH = RUN_DIR / "addition_run_gradient_summary.txt"
 RETRAIN_BACKBONES = False
 
 # Methods included in the gradient-policy comparison run.
-METHODS = ("ot",)  # Expand if you later add gradient variants for GW / FGW.
+METHODS = ["ot"]  # Expand if you later add gradient variants for GW / FGW.
 
 # Backbone training hyperparameters.
 FACTUAL_TRAIN_SIZE = 30000
 FACTUAL_VALIDATION_SIZE = 4000
-HIDDEN_DIMS = (192, 192, 192, 192)
-TARGET_VARS = ("S1", "C1", "S2", "C2")
+HIDDEN_DIMS = [192, 192, 192, 192]
+TARGET_VARS = ["S1", "C1", "S2", "C2"]
 LEARNING_RATE = 1e-3
 EPOCHS = 200
 TRAIN_BATCH_SIZE = 256

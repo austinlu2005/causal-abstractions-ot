@@ -15,7 +15,7 @@ from addition_experiment.seed_sweep import (
     save_seed_sweep_plots,
 )
 
-SEEDS = (1,)  # (41, 42, 43, 44, 45)
+SEEDS = [1]  # [41, 42, 43, 44, 45]
 DEVICE = "cpu"
 RUN_TIMESTAMP = os.environ.get("RESULTS_TIMESTAMP") or datetime.now().strftime("%Y%m%d_%H%M%S")
 RUN_DIR = Path("results") / f"{RUN_TIMESTAMP}_addition"
@@ -24,10 +24,10 @@ OUTPUT_PATH = RUN_DIR / "addition_seed_sweep_results.json"
 SUMMARY_PATH = RUN_DIR / "addition_run_summary.txt"
 
 # Methods included in the comparison run.
-METHODS = ("das", "ot") # ("ot", "gw", "fgw", "das")
+METHODS = ["das", "ot"]  # ["ot", "gw", "fgw", "das"]
 
 # Abstract variables to align
-TARGET_VARS = ("C1", "C2")
+TARGET_VARS = ["C1", "C2"]
 
 # Pair-bank split sizes.
 TRAIN_PAIR_SIZE = 200
@@ -63,10 +63,10 @@ BATCH_SIZE = 128
 # OT / GW / FGW hyperparameters.
 RESOLUTION = 1
 FGW_ALPHA = 0.5
-OT_EPSILONS = (0.05,) # (0.01, 0.03, 0.05, 0.1)
-OT_TAUS = (1.0,)
-OT_TOP_K_VALUES = tuple(range(1, 10))
-OT_LAMBDAS = tuple(np.arange(0.1, 2.0 + 1e-9, 0.1))
+OT_EPSILONS = [0.05]  # [0.01, 0.03, 0.05, 0.1]
+OT_TAUS = [1.0]
+OT_TOP_K_VALUES = list(range(1, 10))
+OT_LAMBDAS = list(np.arange(0.1, 2.0 + 1e-9, 0.1))
 
 # DAS hyperparameters.
 DAS_MAX_EPOCHS = 1000
@@ -74,7 +74,7 @@ DAS_MIN_EPOCHS = 5
 DAS_PLATEAU_PATIENCE = 1
 DAS_PLATEAU_REL_DELTA = 1e-2
 DAS_LEARNING_RATE = 1e-3
-DAS_SUBSPACE_DIMS = (1, 16, 32, 48, 64, 80, 96, 112, 128, 144, 160, 176, 192)
+DAS_SUBSPACE_DIMS = [1, 16, 32, 48, 64, 80, 96, 112, 128, 144, 160, 176, 192]
 DAS_LAYERS = None
 
 

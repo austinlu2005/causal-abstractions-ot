@@ -63,7 +63,10 @@ class CompareExperimentConfig:
     ot_tau: float = 1.0
     uot_beta_abstract: float = 1.0
     uot_beta_neural: float = 1.0
+    transport_solver_backend: str = "custom"
     signature_mode: str = "prob_delta"
+    save_outputs: bool = True
+    save_plots: bool = True
     ot_top_k_values: tuple[int, ...] | None = None
     ot_lambdas: tuple[float, ...] = (1.0,)
     das_max_epochs: int = 1
@@ -86,6 +89,44 @@ def _build_summary_lines(
     method_runtime_seconds: dict[str, float],
     summary_records: list[dict[str, object]],
 ) -> tuple[list[str], dict[str, dict[str, object]]]:
+    def _bank_metadata(bank_or_banks):
+        if isinstance(bank_or_banks, dict):
+            return {variable: bank.metadata() for variable, bank in bank_or_banks.items()}
+        return bank_or_banks.metadata()
+
+    def _extend_bank_summary_lines(lines: list[str], bank_or_banks) -> None:
+        if isinstance(bank_or_banks, dict):
+            for variable, bank in bank_or_banks.items():
+                stats = dict(bank.pair_stats)
+                split = f"{bank.split}:{variable}"
+                lines.append(
+                    f"{split} pair bank | total_pairs={int(stats.get('total_pairs', 0))} "
+                    f"| changed_any={int(stats.get('changed_any_count', 0))} "
+                    f"| unchanged_any={int(stats.get('unchanged_any_count', 0))}"
+                )
+                per_variable = dict(stats.get("per_variable", {}))
+                for stat_variable, variable_stats in per_variable.items():
+                    lines.append(
+                        f"{split} pair bank [{stat_variable}] | changed={int(variable_stats.get('changed_count', 0))} "
+                        f"| unchanged={int(variable_stats.get('unchanged_count', 0))} "
+                        f"| changed_rate={float(variable_stats.get('changed_rate', 0.0)):.4f}"
+                    )
+            return
+        stats = dict(bank_or_banks.pair_stats)
+        split = str(bank_or_banks.split)
+        lines.append(
+            f"{split} pair bank | total_pairs={int(stats.get('total_pairs', 0))} "
+            f"| changed_any={int(stats.get('changed_any_count', 0))} "
+            f"| unchanged_any={int(stats.get('unchanged_any_count', 0))}"
+        )
+        per_variable = dict(stats.get("per_variable", {}))
+        for variable, variable_stats in per_variable.items():
+            lines.append(
+                f"{split} pair bank [{variable}] | changed={int(variable_stats.get('changed_count', 0))} "
+                f"| unchanged={int(variable_stats.get('unchanged_count', 0))} "
+                f"| changed_rate={float(variable_stats.get('changed_rate', 0.0)):.4f}"
+            )
+
     method_selections = {
         method: build_method_selection_summary(method, method_payloads[method])
         for method in config.methods
@@ -131,6 +172,7 @@ def _build_summary_lines(
         f"ot_tau: {float(config.ot_tau):.6f}",
         f"uot_beta_abstract: {float(config.uot_beta_abstract):.6f}",
         f"uot_beta_neural: {float(config.uot_beta_neural):.6f}",
+        f"transport_solver_backend: {config.transport_solver_backend}",
         f"signature_mode: {config.signature_mode}",
         "ot_top_k_values: "
         + ("None" if config.ot_top_k_values is None else ", ".join(str(int(value)) for value in config.ot_top_k_values)),
@@ -148,27 +190,9 @@ def _build_summary_lines(
         f"factual_validation_exact_acc: {float(factual_metrics.get('exact_acc', 0.0)):.4f}",
         "",
     ]
-    for bank in (train_bank, calibration_bank, test_bank):
-        stats = dict(bank.pair_stats)
-        split = str(bank.split)
-        summary_lines.extend(
-            [
-                (
-                    f"{split} pair bank | total_pairs={int(stats.get('total_pairs', 0))} "
-                    f"| changed_any={int(stats.get('changed_any_count', 0))} "
-                    f"| unchanged_any={int(stats.get('unchanged_any_count', 0))}"
-                )
-            ]
-        )
-        per_variable = dict(stats.get("per_variable", {}))
-        for variable, variable_stats in per_variable.items():
-            summary_lines.append(
-                (
-                    f"{split} pair bank [{variable}] | changed={int(variable_stats.get('changed_count', 0))} "
-                    f"| unchanged={int(variable_stats.get('unchanged_count', 0))} "
-                    f"| changed_rate={float(variable_stats.get('changed_rate', 0.0)):.4f}"
-                )
-            )
+    _extend_bank_summary_lines(summary_lines, train_bank)
+    _extend_bank_summary_lines(summary_lines, calibration_bank)
+    _extend_bank_summary_lines(summary_lines, test_bank)
     summary_lines.append("")
     for method in config.methods:
         summary_lines.append(format_method_selection_summary(method_selections[method]))
@@ -286,6 +310,7 @@ def run_comparison_with_banks(
                     tau=config.ot_tau,
                     uot_beta_abstract=config.uot_beta_abstract,
                     uot_beta_neural=config.uot_beta_neural,
+                    solver_backend=config.transport_solver_backend,
                     signature_mode=getattr(config, "signature_mode", "prob_delta"),
                     target_vars=tuple(config.target_vars),
                     top_k_values=config.ot_top_k_values,
@@ -322,6 +347,18 @@ def run_comparison_with_banks(
         print()
 
     summary_records = summarize_method_records(all_records)
+    summary_by_method = {str(record["method"]): record for record in summary_records}
+    for method in config.methods:
+        if method in summary_by_method:
+            continue
+        payload = method_payloads.get(method, {})
+        summary_by_method[method] = {
+            "method": method,
+            "exact_acc": 0.0,
+            "failed": bool(payload.get("failed", False)),
+            "failure_reason": payload.get("failure_reason"),
+        }
+    summary_records = [summary_by_method[method] for method in config.methods if method in summary_by_method]
     for record in summary_records:
         record["runtime_seconds"] = float(method_runtime_seconds.get(str(record["method"]), 0.0))
     summary_lines, method_selections = _build_summary_lines(
@@ -342,13 +379,14 @@ def run_comparison_with_banks(
         "target_vars": list(config.target_vars),
         "ot_epsilon": float(config.ot_epsilon),
         "ot_tau": float(config.ot_tau),
+        "transport_solver_backend": str(config.transport_solver_backend),
         "uot_beta_abstract": float(config.uot_beta_abstract),
         "uot_beta_neural": float(config.uot_beta_neural),
         "backbone": backbone_meta,
         "banks": {
-            "train": train_bank.metadata(),
-            "calibration": calibration_bank.metadata(),
-            "test": test_bank.metadata(),
+            "train": _bank_metadata(train_bank),
+            "calibration": _bank_metadata(calibration_bank),
+            "test": _bank_metadata(test_bank),
         },
         "results": all_records,
         "method_summary": summary_records,
@@ -356,18 +394,21 @@ def run_comparison_with_banks(
         "method_runtime_seconds": method_runtime_seconds,
     }
 
-    plot_paths = save_comparison_plots(payload, config.output_path, method_payloads=method_payloads)
-    payload["plots"] = plot_paths
+    if config.save_outputs and config.save_plots:
+        plot_paths = save_comparison_plots(payload, config.output_path, method_payloads=method_payloads)
+        payload["plots"] = plot_paths
     payload["summary_path"] = str(config.summary_path)
-    write_json(config.output_path, payload)
-    write_text_report(config.summary_path, "\n".join(summary_lines))
+    if config.save_outputs:
+        write_json(config.output_path, payload)
+        write_text_report(config.summary_path, "\n".join(summary_lines))
 
     factual_metrics = dict(backbone_meta.get("factual_validation_metrics", {}))
     print(f"Backbone factual validation accuracy: {float(factual_metrics.get('exact_acc', 0.0)):.4f}")
     print_results_table(all_records, "Counterfactual Test Results")
     print_results_table(summary_records, "Method Average Summary")
-    print(f"Wrote comparison results to {Path(config.output_path).resolve()}")
-    print(f"Wrote comparison summary to {Path(config.summary_path).resolve()}")
+    if config.save_outputs:
+        print(f"Wrote comparison results to {Path(config.output_path).resolve()}")
+        print(f"Wrote comparison summary to {Path(config.summary_path).resolve()}")
     return payload
 
 

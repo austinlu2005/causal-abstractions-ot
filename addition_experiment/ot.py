@@ -67,12 +67,20 @@ def _squared_euclidean_cost(u_points: torch.Tensor, v_points: torch.Tensor) -> t
     return torch.cdist(u, v, p=2).pow(2)
 
 
+def _balanced_marginal_error(pi: torch.Tensor, a: torch.Tensor, b: torch.Tensor) -> float:
+    """Compute the max absolute marginal violation for a balanced transport plan."""
+    row_error = torch.max(torch.abs(pi.sum(dim=1) - a))
+    col_error = torch.max(torch.abs(pi.sum(dim=0) - b))
+    return float(torch.maximum(row_error, col_error).item())
+
+
 def sinkhorn_uniform_ot(
     u_points: torch.Tensor,
     v_points: torch.Tensor,
     epsilon: float,
     n_iter: int,
     temperature: float = 1.0,
+    tol: float = 1e-9,
 ) -> tuple[torch.Tensor, float]:
     """Entropic OT with uniform marginals and squared Euclidean cost."""
     if epsilon <= 0:
@@ -81,6 +89,8 @@ def sinkhorn_uniform_ot(
         raise ValueError("temperature must be > 0")
     if n_iter <= 0:
         raise ValueError("n_iter must be > 0")
+    if tol < 0:
+        raise ValueError("tol must be >= 0")
 
     u = u_points.to(dtype=torch.float32)
     v = v_points.to(dtype=torch.float32)
@@ -98,6 +108,9 @@ def sinkhorn_uniform_ot(
         r = a / kr.clamp_min(1e-30)
         kt = kernel.transpose(0, 1) @ r
         c = b / kt.clamp_min(1e-30)
+        pi = r[:, None] * kernel * c[None, :]
+        if _balanced_marginal_error(pi, a, b) <= float(tol):
+            break
 
     pi = r[:, None] * kernel * c[None, :]
     ot_cost = float((pi * cost).sum().item())
@@ -111,6 +124,7 @@ def _sinkhorn_from_cost(
     epsilon: float,
     n_iter: int,
     temperature: float = 1.0,
+    tol: float = 1e-9,
 ) -> tuple[torch.Tensor, float]:
     """Balanced entropic OT on a precomputed cost matrix."""
     if epsilon <= 0:
@@ -119,6 +133,8 @@ def _sinkhorn_from_cost(
         raise ValueError("temperature must be > 0")
     if n_iter <= 0:
         raise ValueError("n_iter must be > 0")
+    if tol < 0:
+        raise ValueError("tol must be >= 0")
 
     cost = cost.to(dtype=torch.float32)
     a = a.to(dtype=torch.float32, device=cost.device)
@@ -130,6 +146,9 @@ def _sinkhorn_from_cost(
     for _ in range(n_iter):
         r = a / (kernel @ c).clamp_min(1e-30)
         c = b / (kernel.transpose(0, 1) @ r).clamp_min(1e-30)
+        pi = r[:, None] * kernel * c[None, :]
+        if _balanced_marginal_error(pi, a, b) <= float(tol):
+            break
 
     pi = r[:, None] * kernel * c[None, :]
     total_cost = float((pi * cost).sum().item())
@@ -300,6 +319,7 @@ def solve_gw_transport(
                 epsilon=float(config.epsilon),
                 n_iter=int(config.max_iter),
                 temperature=temperature,
+                tol=float(config.tol),
             )
             delta = float(torch.max(torch.abs(next_transport_t - transport_t)).item())
             transport_t = next_transport_t
@@ -341,6 +361,7 @@ def solve_ot_transport(
             epsilon=float(config.epsilon),
             n_iter=int(config.max_iter),
             temperature=temperature,
+            tol=float(config.tol),
         )
         transport = transport_tensor.detach().cpu().numpy()
         last_transport = transport
@@ -392,6 +413,7 @@ def solve_fgw_transport(
                 epsilon=float(config.epsilon),
                 n_iter=int(config.max_iter),
                 temperature=temperature,
+                tol=float(config.tol),
             )
             delta = float(torch.max(torch.abs(next_transport_t - transport_t)).item())
             transport_t = next_transport_t

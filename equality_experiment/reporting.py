@@ -62,6 +62,8 @@ def build_method_selection_summary(method: str, payload: dict[str, object]) -> d
     if method in {"gw", "ot", "uot", "fgw"}:
         return {
             "method": method,
+            "failed": bool(payload.get("failed", False)),
+            "failure_reason": payload.get("failure_reason"),
             "transport_meta": dict(payload.get("transport_meta", {})),
             "selected_hyperparameters": dict(payload.get("selected_hyperparameters", {})),
             "selection_objective": payload.get("selection_objective"),
@@ -110,6 +112,8 @@ def format_method_selection_summary(summary: dict[str, object]) -> str:
     lines = [method]
 
     if method in {"GW", "OT", "UOT", "FGW"}:
+        failed = bool(summary.get("failed", False))
+        failure_reason = summary.get("failure_reason")
         transport_meta = dict(summary.get("transport_meta", {}))
         selected_hyperparameters = dict(summary.get("selected_hyperparameters", {}))
         selection_objective = summary.get("selection_objective")
@@ -117,6 +121,13 @@ def format_method_selection_summary(summary: dict[str, object]) -> str:
         if transport_meta:
             solver_bits = ", ".join(f"{key}={value}" for key, value in sorted(transport_meta.items()))
             lines.append(f"solver: {solver_bits}")
+        if failed:
+            if failure_reason is not None:
+                lines.append(f"status: failed ({failure_reason})")
+            else:
+                lines.append("status: failed")
+            lines.append("selected soft matches: none")
+            return "\n".join(lines)
         if selection_objective is not None:
             lines.append(f"selection_objective: {selection_objective}")
         if final_evaluation_policy is not None:
