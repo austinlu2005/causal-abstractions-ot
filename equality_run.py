@@ -16,11 +16,10 @@ from equality_experiment.runtime import ensure_parent_dir, resolve_device, write
 from equality_experiment.scm import load_equality_problem
 
 
-SEED = 1
+SEEDS = [1]
 DEVICE = "cpu"
 RUN_TIMESTAMP = os.environ.get("RESULTS_TIMESTAMP") or datetime.now().strftime("%Y%m%d_%H%M%S")
 RUN_DIR = Path("results") / f"{RUN_TIMESTAMP}_equality"
-CHECKPOINT_PATH = Path(f"models/equality_mlp_seed{SEED}.pt")
 OUTPUT_PATH = RUN_DIR / "equality_run_results.json"
 SUMMARY_PATH = RUN_DIR / "equality_run_summary.txt"
 RETRAIN_BACKBONE = False
@@ -93,7 +92,7 @@ DAS_LAYERS = None
 def build_train_config() -> EqualityTrainConfig:
     """Build the equality backbone training config."""
     return EqualityTrainConfig(
-        seed=SEED,
+        seed=SEEDS[0],
         n_train=FACTUAL_TRAIN_SIZE,
         n_validation=FACTUAL_VALIDATION_SIZE,
         hidden_dims=tuple(HIDDEN_DIMS),
@@ -104,6 +103,25 @@ def build_train_config() -> EqualityTrainConfig:
         eval_batch_size=EVAL_BATCH_SIZE,
         num_entities=NUM_ENTITIES,
         embedding_dim=EMBEDDING_DIM,
+    )
+
+
+def build_train_config_for_seed(seed: int) -> EqualityTrainConfig:
+    """Build the equality backbone training config for one seed."""
+    config = build_train_config()
+    return EqualityTrainConfig(
+        seed=int(seed),
+        n_train=config.n_train,
+        n_validation=config.n_validation,
+        hidden_dims=config.hidden_dims,
+        abstract_variables=config.abstract_variables,
+        learning_rate=config.learning_rate,
+        train_epochs=config.train_epochs,
+        train_batch_size=config.train_batch_size,
+        eval_batch_size=config.eval_batch_size,
+        num_entities=config.num_entities,
+        embedding_dim=config.embedding_dim,
+        num_classes=config.num_classes,
     )
 
 
@@ -123,6 +141,8 @@ def _format_beta_tag(beta: float) -> str:
 
 
 def build_compare_config(
+    seed: int,
+    checkpoint_path: Path,
     methods: tuple[str, ...],
     ot_epsilon: float,
     ot_tau: float,
@@ -134,8 +154,8 @@ def build_compare_config(
 ) -> CompareExperimentConfig:
     """Build the equality comparison config."""
     return CompareExperimentConfig(
-        seed=SEED,
-        checkpoint_path=CHECKPOINT_PATH,
+        seed=int(seed),
+        checkpoint_path=checkpoint_path,
         output_path=output_path,
         summary_path=summary_path,
         methods=tuple(methods),
@@ -177,6 +197,11 @@ def build_compare_config(
         das_subspace_dims=DAS_SUBSPACE_DIMS,
         das_layers=DAS_LAYERS,
     )
+
+
+def _checkpoint_path_for_seed(seed: int) -> Path:
+    """Resolve the checkpoint path for one seed."""
+    return Path(f"models/equality_mlp_seed{int(seed)}.pt")
 
 
 def _build_best_method_exact_table(
@@ -462,27 +487,106 @@ def _save_best_method_exact_plot(table_records: list[dict[str, object]], output_
     return str(output_path)
 
 
-def main() -> None:
+def _build_aggregate_seed_summary(seed_payloads: list[dict[str, object]]) -> tuple[dict[str, object], str]:
+    """Aggregate best-per-method exact accuracies across seeds."""
+    method_to_seed_rows: dict[str, list[dict[str, object]]] = {}
+    for seed_payload in seed_payloads:
+        seed = int(seed_payload["seed"])
+        best_method_runs = dict(seed_payload.get("best_method_runs", {}))
+        for method, record in best_method_runs.items():
+            comparison = dict(record.get("comparison", {}))
+            method_records = [
+                dict(item)
+                for item in comparison.get("results", [])
+                if str(item.get("method")) == method
+            ]
+            exact_by_variable = {
+                str(item["variable"]): float(item.get("exact_acc", 0.0))
+                for item in method_records
+            }
+            avg = float(
+                next(
+                    (
+                        item.get("exact_acc", 0.0)
+                        for item in comparison.get("method_summary", [])
+                        if str(item.get("method")) == method
+                    ),
+                    0.0,
+                )
+            )
+            method_to_seed_rows.setdefault(method, []).append(
+                {
+                    "seed": seed,
+                    "average_exact_acc": avg,
+                    "exact_by_variable": exact_by_variable,
+                    "source": dict(record),
+                }
+            )
+
+    aggregate_rows = []
+    lines = ["Aggregate Best-Per-Method Accuracy Across Seeds", f"seeds: {', '.join(str(int(seed_payload['seed'])) for seed_payload in seed_payloads)}", ""]
+    for method in sorted(method_to_seed_rows):
+        rows = method_to_seed_rows[method]
+        avg_values = np.asarray([float(row["average_exact_acc"]) for row in rows], dtype=float)
+        variable_stats = {}
+        for variable in TARGET_VARS:
+            values = np.asarray([float(row["exact_by_variable"].get(variable, 0.0)) for row in rows], dtype=float)
+            variable_stats[variable] = {
+                "mean": float(values.mean()) if values.size else 0.0,
+                "std": float(values.std()) if values.size else 0.0,
+                "values": [float(value) for value in values.tolist()],
+            }
+        aggregate_rows.append(
+            {
+                "method": method,
+                "average_exact_acc_mean": float(avg_values.mean()) if avg_values.size else 0.0,
+                "average_exact_acc_std": float(avg_values.std()) if avg_values.size else 0.0,
+                "variables": variable_stats,
+                "per_seed": rows,
+            }
+        )
+        lines.append(f"{method.upper()}")
+        for variable in TARGET_VARS:
+            stats = variable_stats[variable]
+            lines.append(
+                f"{variable} = {stats['mean']:.4f} ± {stats['std']:.4f} "
+                f"(per-seed: {', '.join(f'{value:.4f}' for value in stats['values'])})"
+            )
+        lines.append(
+            f"average = {float(avg_values.mean()):.4f} ± {float(avg_values.std()):.4f} "
+            f"(per-seed: {', '.join(f'{float(value):.4f}' for value in avg_values.tolist())})"
+        )
+        lines.append("")
+    return {"methods": aggregate_rows}, "\n".join(lines).rstrip()
+
+
+def _run_single_seed(seed: int) -> dict[str, object]:
+    """Run the full HEQ comparison pipeline for one seed."""
+    seed_run_dir = RUN_DIR / f"seed_{int(seed)}"
+    checkpoint_path = _checkpoint_path_for_seed(seed)
+    output_path = seed_run_dir / "equality_run_results.json"
+    summary_path = seed_run_dir / "equality_run_summary.txt"
+
     problem = load_equality_problem(
         run_checks=True,
         num_entities=NUM_ENTITIES,
         embedding_dim=EMBEDDING_DIM,
-        seed=SEED,
+        seed=int(seed),
     )
     device = resolve_device(DEVICE)
-    train_config = build_train_config()
+    train_config = build_train_config_for_seed(seed)
 
-    if RETRAIN_BACKBONE or not CHECKPOINT_PATH.exists():
+    if RETRAIN_BACKBONE or not checkpoint_path.exists():
         model, _, backbone_meta = train_backbone(
             problem=problem,
             train_config=train_config,
-            checkpoint_path=CHECKPOINT_PATH,
+            checkpoint_path=checkpoint_path,
             device=device,
         )
     else:
         model, _, backbone_meta = load_backbone(
             problem=problem,
-            checkpoint_path=CHECKPOINT_PATH,
+            checkpoint_path=checkpoint_path,
             device=device,
             train_config=train_config,
         )
@@ -490,7 +594,7 @@ def main() -> None:
     train_bank = build_pair_bank(
         problem,
         TRAIN_PAIR_SIZE,
-        SEED + 201,
+        int(seed) + 201,
         "train",
         target_vars=tuple(TARGET_VARS),
         pair_policy=TRAIN_PAIR_POLICY,
@@ -505,7 +609,7 @@ def main() -> None:
             calibration_bank[variable] = build_pair_bank(
                 problem,
                 CALIBRATION_PAIR_SIZE,
-                SEED + 301 + idx,
+                int(seed) + 301 + idx,
                 "calibration",
                 target_vars=tuple(TARGET_VARS),
                 pair_policy=TARGETED_PAIR_POLICY,
@@ -516,7 +620,7 @@ def main() -> None:
             test_bank[variable] = build_pair_bank(
                 problem,
                 TEST_PAIR_SIZE,
-                SEED + 401 + idx,
+                int(seed) + 401 + idx,
                 "test",
                 target_vars=tuple(TARGET_VARS),
                 pair_policy=TARGETED_PAIR_POLICY,
@@ -528,7 +632,7 @@ def main() -> None:
         calibration_bank = build_pair_bank(
             problem,
             CALIBRATION_PAIR_SIZE,
-            SEED + 301,
+            int(seed) + 301,
             "calibration",
             target_vars=tuple(TARGET_VARS),
             pair_policy=CALIBRATION_PAIR_POLICY,
@@ -539,7 +643,7 @@ def main() -> None:
         test_bank = build_pair_bank(
             problem,
             TEST_PAIR_SIZE,
-            SEED + 401,
+            int(seed) + 401,
             "test",
             target_vars=tuple(TARGET_VARS),
             pair_policy=TEST_PAIR_POLICY,
@@ -589,11 +693,13 @@ def main() -> None:
 
     main_summary_lines = [
         "Hierarchical Equality Run Summary",
+        f"seed: {int(seed)}",
         f"device: {device}",
         f"methods: {', '.join(METHODS)}",
         f"target_vars: {', '.join(TARGET_VARS)}",
         f"num_entities: {NUM_ENTITIES}",
         f"embedding_dim: {EMBEDDING_DIM}",
+        f"checkpoint_path: {checkpoint_path}",
         (
             "pair_sizes: "
             f"train={TRAIN_PAIR_SIZE}, "
@@ -635,32 +741,25 @@ def main() -> None:
         "signature_modes: " + ", ".join(SIGNATURE_MODES),
         "ot_top_k_values: " + ", ".join(str(int(value)) for value in OT_TOP_K_VALUES),
         "ot_lambdas: " + ", ".join(f"{float(value):.6f}" for value in OT_LAMBDAS),
-        f"das_max_epochs: {DAS_MAX_EPOCHS}",
-        f"das_min_epochs: {DAS_MIN_EPOCHS}",
-        f"das_plateau_patience: {DAS_PLATEAU_PATIENCE}",
-        f"das_plateau_rel_delta: {DAS_PLATEAU_REL_DELTA}",
-        f"das_learning_rate: {DAS_LEARNING_RATE}",
-        (
-            "das_subspace_dims: "
-            + ("None" if DAS_SUBSPACE_DIMS is None else ", ".join(str(int(value)) for value in DAS_SUBSPACE_DIMS))
-        ),
-        f"das_layers: {DAS_LAYERS}",
         "",
     ]
     main_summary_lines.extend(_pair_bank_summary_lines(train_bank))
     main_summary_lines.extend(_pair_bank_summary_lines(calibration_bank))
     main_summary_lines.extend(_pair_bank_summary_lines(test_bank))
     main_summary_lines.append("")
+
     static_runs = []
     if NON_TRANSPORT_METHODS:
         for method in NON_TRANSPORT_METHODS:
-            print(f"[fixed] method={method}")
-            method_dir = RUN_DIR / method
+            print(f"[seed {seed}] [fixed] method={method}")
+            method_dir = seed_run_dir / method
             comparison = run_comparison_with_banks(
                 model=model,
                 backbone_meta=backbone_meta,
                 device=device,
                 config=build_compare_config(
+                    int(seed),
+                    checkpoint_path,
                     (method,),
                     OT_EPSILONS[0],
                     OT_TAUS[0],
@@ -707,7 +806,7 @@ def main() -> None:
                                 )
 
         for sweep_index, (method, ot_epsilon, ot_tau, uot_beta_abstract, uot_beta_neural, signature_mode) in enumerate(method_sweep_points, start=1):
-            method_run_dir = RUN_DIR / method
+            method_run_dir = seed_run_dir / method
             config_stem = _build_transport_config_stem(
                 method=method,
                 signature_mode=signature_mode,
@@ -716,10 +815,8 @@ def main() -> None:
                 uot_beta_abstract=uot_beta_abstract,
                 uot_beta_neural=uot_beta_neural,
             )
-            epsilon_output_path = method_run_dir / f"{config_stem}_results.json"
-            epsilon_summary_path = method_run_dir / f"{config_stem}_summary.txt"
             print(
-                f"[sweep {sweep_index}/{len(method_sweep_points)}] "
+                f"[seed {seed}] [sweep {sweep_index}/{len(method_sweep_points)}] "
                 f"method={method} "
                 f"| signature_mode={signature_mode} "
                 f"| ot_epsilon={float(ot_epsilon):.6f} "
@@ -732,14 +829,16 @@ def main() -> None:
                 backbone_meta=backbone_meta,
                 device=device,
                 config=build_compare_config(
+                    int(seed),
+                    checkpoint_path,
                     (method,),
                     ot_epsilon,
                     ot_tau,
                     uot_beta_abstract,
                     uot_beta_neural,
                     signature_mode,
-                    epsilon_output_path,
-                    epsilon_summary_path,
+                    method_run_dir / f"{config_stem}_results.json",
+                    method_run_dir / f"{config_stem}_summary.txt",
                 ),
                 train_bank=train_bank,
                 calibration_bank=calibration_bank,
@@ -763,28 +862,29 @@ def main() -> None:
     for record in static_runs:
         method = str(record.get("method"))
         comparison = dict(record.get("comparison", {}))
-        method_dir = RUN_DIR / method
+        method_dir = seed_run_dir / method
         result_path = method_dir / f"{method}_results.json"
-        summary_path = method_dir / f"{method}_summary.txt"
-        comparison["summary_path"] = str(summary_path)
+        method_summary_path = method_dir / f"{method}_summary.txt"
+        comparison["summary_path"] = str(method_summary_path)
         write_json(result_path, comparison)
         summary_text = f"{method.upper()} Summary"
         if "method_selections" in comparison:
             summary_entry = dict(comparison["method_selections"].get(method, {}))
             if summary_entry:
                 summary_text = format_method_selection_summary(summary_entry)
-        write_text_report(summary_path, summary_text)
+        write_text_report(method_summary_path, summary_text)
         best_method_runs[method] = {
             "method": method,
             "source_type": "fixed",
             "output_path": str(result_path),
-            "summary_path": str(summary_path),
+            "summary_path": str(method_summary_path),
             "comparison": comparison,
         }
 
     payload = {
+        "seed": int(seed),
         "device": str(device),
-        "checkpoint_path": str(CHECKPOINT_PATH),
+        "checkpoint_path": str(checkpoint_path),
         "retrain_backbone": RETRAIN_BACKBONE,
         "targeted_eval": TARGETED_EVAL,
         "ot_epsilons": [float(value) for value in OT_EPSILONS],
@@ -794,7 +894,7 @@ def main() -> None:
         "signature_modes": list(SIGNATURE_MODES),
         "target_vars": list(TARGET_VARS),
         "best_method_runs": {},
-        "summary_path": str(SUMMARY_PATH),
+        "summary_path": str(summary_path),
     }
     for method in TRANSPORT_METHODS:
         method_records = [record for record in epsilon_sweeps if str(record.get("method")) == method]
@@ -803,14 +903,13 @@ def main() -> None:
         best_record = _best_record_for_method(method, method_records)
         if best_record is None:
             continue
-        method_dir = RUN_DIR / method
+        method_dir = seed_run_dir / method
         result_path = method_dir / f"{method}_results.json"
-        summary_path = method_dir / f"{method}_summary.txt"
+        method_summary_path = method_dir / f"{method}_summary.txt"
         comparison = dict(best_record.get("comparison", {}))
-        comparison["summary_path"] = str(summary_path)
+        comparison["summary_path"] = str(method_summary_path)
         write_json(result_path, comparison)
-        summary_text = _build_transport_method_summary(method, method_records)
-        write_text_report(summary_path, summary_text)
+        write_text_report(method_summary_path, _build_transport_method_summary(method, method_records))
         best_method_runs[method] = {
             "method": method,
             "source_type": "sweep",
@@ -820,7 +919,7 @@ def main() -> None:
             "uot_beta_neural": float(best_record.get("uot_beta_neural", 0.0)),
             "signature_mode": best_record.get("signature_mode"),
             "output_path": str(result_path),
-            "summary_path": str(summary_path),
+            "summary_path": str(method_summary_path),
             "comparison": comparison,
         }
     payload["best_method_runs"] = best_method_runs
@@ -830,7 +929,7 @@ def main() -> None:
     )
     best_method_plot_path = _save_best_method_exact_plot(
         best_method_table_records,
-        RUN_DIR / "best_method_exact_accuracy.png",
+        seed_run_dir / "best_method_exact_accuracy.png",
     )
     payload["best_method_exact_table"] = best_method_table_records
     payload["best_method_exact_plot"] = best_method_plot_path
@@ -858,9 +957,10 @@ def main() -> None:
                 )
         section_lines.extend(["", format_method_selection_summary(method_selection)])
         best_method_sections.append("\n".join(section_lines))
-    write_json(OUTPUT_PATH, payload)
+
+    write_json(output_path, payload)
     write_text_report(
-        SUMMARY_PATH,
+        summary_path,
         "\n".join(main_summary_lines)
         + "\n\n"
         + best_method_table_text
@@ -868,8 +968,67 @@ def main() -> None:
         + (f"best_method_exact_plot: {best_method_plot_path}\n\n" if best_method_plot_path is not None else "")
         + ("\n\n" + ("=" * 72) + "\n\n").join(best_method_sections),
     )
+    return payload
 
-    print(best_method_table_text)
+
+def main() -> None:
+    seed_payloads = []
+    for seed_index, seed in enumerate(SEEDS, start=1):
+        print(f"[seed {seed_index}/{len(SEEDS)}] seed={int(seed)}")
+        seed_payloads.append(_run_single_seed(int(seed)))
+
+    aggregate_payload, aggregate_text = _build_aggregate_seed_summary(seed_payloads)
+    aggregate_rows = []
+    for item in aggregate_payload["methods"]:
+        aggregate_rows.append(
+            {
+                "method": item["method"],
+                "average_exact_acc": float(item["average_exact_acc_mean"]),
+                "records": [
+                    {
+                        "variable": variable,
+                        "exact_acc": float(stats["mean"]),
+                    }
+                    for variable, stats in item["variables"].items()
+                ],
+                "source": {"source_type": "aggregate"},
+            }
+        )
+    best_method_plot_path = _save_best_method_exact_plot(
+        aggregate_rows,
+        RUN_DIR / "best_method_exact_accuracy.png",
+    )
+    payload = {
+        "seeds": [int(seed) for seed in SEEDS],
+        "device": str(resolve_device(DEVICE)),
+        "retrain_backbone": RETRAIN_BACKBONE,
+        "targeted_eval": TARGETED_EVAL,
+        "ot_epsilons": [float(value) for value in OT_EPSILONS],
+        "ot_taus": [float(value) for value in OT_TAUS],
+        "uot_beta_abstracts": [float(value) for value in UOT_BETA_ABSTRACTS],
+        "uot_beta_neurals": [float(value) for value in UOT_BETA_NEURALS],
+        "signature_modes": list(SIGNATURE_MODES),
+        "target_vars": list(TARGET_VARS),
+        "seed_runs": seed_payloads,
+        "aggregate": aggregate_payload,
+        "best_method_exact_plot": best_method_plot_path,
+        "summary_path": str(SUMMARY_PATH),
+    }
+    lines = [
+        "Hierarchical Equality Run Summary",
+        f"seeds: {', '.join(str(int(seed)) for seed in SEEDS)}",
+        f"methods: {', '.join(METHODS)}",
+        f"target_vars: {', '.join(TARGET_VARS)}",
+        f"transport_solver_backend: {TRANSPORT_SOLVER_BACKEND}",
+        "",
+        aggregate_text,
+    ]
+    if best_method_plot_path is not None:
+        lines.extend(["", f"best_method_exact_plot: {best_method_plot_path}"])
+    write_json(OUTPUT_PATH, payload)
+    write_text_report(SUMMARY_PATH, "\n".join(lines))
+
+    print(aggregate_text)
     if best_method_plot_path is not None:
         print(f"Wrote best-method exact plot to {Path(best_method_plot_path).resolve()}")
     print(f"Wrote run results to {Path(OUTPUT_PATH).resolve()}")
