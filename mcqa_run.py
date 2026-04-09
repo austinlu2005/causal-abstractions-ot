@@ -21,16 +21,16 @@ MODEL_NAME = "google/gemma-2-2b"
 HF_TOKEN = os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")
 PROMPT_HF_LOGIN = True
 METHODS = ["das", "ot"]
-TARGET_VARS = ["answer_pointer", "answer"]
+TARGET_VARS = ["answer_pointer"] #, "answer"]
 COUNTERFACTUAL_NAMES = ["answerPosition", "randomLetter", "answerPosition_randomLetter"]
 
 LAYERS = list(range(26))
-TOKEN_POSITION_IDS = ["correct_symbol", "correct_symbol_period", "last_token"]
+TOKEN_POSITION_IDS = ["last_token"] # "correct_symbol", "correct_symbol_period", 
 
 BATCH_SIZE = 8
 DATASET_SIZE = None  # Use the full public HF train/validation/test splits before factual filtering.
 
-RESOLUTION = 1 # gemma-2-2b has 2304 hidden layer size
+RESOLUTION = 64 # gemma-2-2b has 2304 hidden layer size
 OT_EPSILONS = [1.0]
 OT_TAUS = [1.0]
 UOT_BETA_ABSTRACTS = [0.1, 1.0]
@@ -44,7 +44,7 @@ DAS_MIN_EPOCHS = 5
 DAS_PLATEAU_PATIENCE = 1
 DAS_PLATEAU_REL_DELTA = 1e-2
 DAS_LEARNING_RATE = 1e-3
-DAS_SUBSPACE_DIMS = [1, 4, 8, 16, 32]
+DAS_SUBSPACE_DIMS = [256, 512, 768, 1024, 1280, 1536, 1792, 2048, 2304]
 
 
 def ensure_hf_login(token: str | None, prompt_login: bool) -> str | None:
