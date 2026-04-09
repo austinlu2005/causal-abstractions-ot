@@ -74,9 +74,13 @@ class DASSubspaceIntervention(nn.Module):
 
     def forward(self, base_vectors: torch.Tensor, source_vectors: torch.Tensor) -> torch.Tensor:
         basis = self.project.weight
-        base_features = base_vectors @ basis.t()
-        source_features = source_vectors @ basis.t()
-        return base_vectors + (source_features - base_features) @ basis
+        compute_dtype = basis.dtype
+        base_vectors_compute = base_vectors.to(compute_dtype)
+        source_vectors_compute = source_vectors.to(compute_dtype)
+        base_features = base_vectors_compute @ basis.t()
+        source_features = source_vectors_compute @ basis.t()
+        updated = base_vectors_compute + (source_features - base_features) @ basis
+        return updated.to(base_vectors.dtype)
 
 
 def _collect_source_hidden_states(
