@@ -271,6 +271,7 @@ def filter_correct_examples(
     """Keep only examples where Gemma predicts the factual answer token."""
     filtered: dict[str, list[dict[str, object]]] = {}
     for dataset_name, rows in datasets_by_name.items():
+        print(f"[filter] dataset={dataset_name} total_rows={len(rows)}")
         prompts = [str(row["input"]["raw_input"]) for row in rows]
         expected_answers = [str(causal_model.run_forward(row["input"])["answer"]) for row in rows]
         keep_mask: list[bool] = []
@@ -290,6 +291,7 @@ def filter_correct_examples(
                 decoded = tokenizer.decode([int(predicted_id)])
                 keep_mask.append(expected in decoded)
         filtered[dataset_name] = [row for row, keep in zip(rows, keep_mask) if keep]
+        print(f"[filter] dataset={dataset_name} kept={len(filtered[dataset_name])}/{len(rows)}")
     return filtered
 
 
@@ -458,6 +460,7 @@ def load_filtered_mcqa_pipeline(
     import transformers
 
     torch_device = resolve_device(device)
+    print(f"[load] device={torch_device} model={model_name}")
     tokenizer = transformers.AutoTokenizer.from_pretrained(model_name, token=hf_token)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
@@ -466,9 +469,14 @@ def load_filtered_mcqa_pipeline(
     model = transformers.AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=dtype, token=hf_token)
     model.to(torch_device)
     model.eval()
+    print(f"[load] model and tokenizer ready dtype={dtype}")
     causal_model = MCQACausalModel()
     token_positions = get_token_positions(tokenizer, causal_model)
+    print(f"[load] token_positions={[token_position.id for token_position in token_positions]}")
+    print(f"[load] loading public MCQA datasets size_cap={dataset_size}")
     public_datasets = load_public_mcqa_datasets(size=dataset_size, hf_token=hf_token)
+    print(f"[load] loaded datasets={sorted(public_datasets.keys())}")
+    print("[load] starting factual filtering")
     filtered_datasets = filter_correct_examples(
         model=model,
         tokenizer=tokenizer,
@@ -477,4 +485,5 @@ def load_filtered_mcqa_pipeline(
         batch_size=batch_size,
         device=torch_device,
     )
+    print("[load] factual filtering complete")
     return model, tokenizer, causal_model, token_positions, filtered_datasets

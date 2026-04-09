@@ -71,8 +71,10 @@ def run_comparison(
     method_payloads: dict[str, list[dict[str, object]]] = {method: [] for method in config.methods}
     all_records: list[dict[str, object]] = []
     for method in config.methods:
+        print(f"[method] start method={method} targets={list(config.target_vars)}")
         for target_var in config.target_vars:
             start = perf_counter()
+            print(f"[method] method={method} target={target_var}")
             train_bank = banks_by_split["train"][target_var]
             calibration_bank = banks_by_split["calibration"][target_var]
             test_bank = banks_by_split["test"][target_var]
@@ -122,6 +124,7 @@ def run_comparison(
             payload["runtime_seconds"] = float(runtime_seconds)
             method_payloads[method].append(payload)
             all_records.extend(payload["results"])
+            print(f"[method] done method={method} target={target_var} runtime={float(runtime_seconds):.2f}s")
     summary_records = summarize_method_records(all_records)
     summary_text = format_summary(
         model_name=config.model_name,

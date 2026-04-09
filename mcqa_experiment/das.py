@@ -40,6 +40,7 @@ def train_das_candidate(
     plateau_rel_delta: float,
     learning_rate: float,
     device: torch.device,
+    verbose: bool = True,
 ) -> tuple[DASSubspaceIntervention, list[float]]:
     intervention = DASSubspaceIntervention(hidden_size=int(model.config.hidden_size), subspace_dim=int(subspace_dim)).to(device)
     optimizer = torch.optim.Adam(intervention.parameters(), lr=float(learning_rate))
@@ -95,6 +96,11 @@ def train_das_candidate(
             epoch_losses.append(float(loss.detach().cpu()))
         epoch_loss = sum(epoch_losses) / max(len(epoch_losses), 1)
         losses.append(epoch_loss)
+        if verbose:
+            print(
+                f"[DAS] var={bank.target_var} site={site.label} dim={int(subspace_dim)} "
+                f"epoch={epoch_index + 1} loss={float(epoch_loss):.6f}"
+            )
         if best_loss is None or epoch_loss < float(best_loss) * (1.0 - float(plateau_rel_delta)):
             best_loss = epoch_loss
             plateau_steps = 0
@@ -152,8 +158,21 @@ def run_das_pipeline(
     best = None
     best_intervention = None
     best_site = None
+    total_candidates = len(sites) * len(subspace_dims)
+    candidate_index = 0
+    if config.verbose:
+        print(
+            f"[DAS] start variable={train_bank.target_var} "
+            f"sites={len(sites)} subspace_dims={list(subspace_dims)} total_candidates={total_candidates}"
+        )
     for site in sites:
         for subspace_dim in subspace_dims:
+            candidate_index += 1
+            if config.verbose:
+                print(
+                    f"[DAS] candidate {candidate_index}/{total_candidates} "
+                    f"variable={train_bank.target_var} site={site.label} dim={int(subspace_dim)}"
+                )
             intervention, loss_history = train_das_candidate(
                 model=model,
                 bank=train_bank,
@@ -166,6 +185,7 @@ def run_das_pipeline(
                 plateau_rel_delta=config.plateau_rel_delta,
                 learning_rate=config.learning_rate,
                 device=device,
+                verbose=config.verbose,
             )
             calibration_metrics = evaluate_das_candidate(
                 model=model,
@@ -190,10 +210,21 @@ def run_das_pipeline(
                 "train_loss_history": loss_history,
             }
             search_records.append(record)
+            if config.verbose:
+                print(
+                    f"[DAS] calibration variable={train_bank.target_var} site={site.label} "
+                    f"dim={int(subspace_dim)} exact_acc={float(calibration_metrics['exact_acc']):.4f}"
+                )
             if best is None or float(record["selection_exact_acc"]) > float(best["selection_exact_acc"]):
                 best = record
                 best_intervention = intervention
                 best_site = site
+                if config.verbose:
+                    print(
+                        f"[DAS] new best variable={train_bank.target_var} "
+                        f"site={site.label} dim={int(subspace_dim)} "
+                        f"calibration_exact_acc={float(record['selection_exact_acc']):.4f}"
+                    )
     if best is None or best_intervention is None or best_site is None:
         raise RuntimeError(f"Failed to select a DAS candidate for {train_bank.target_var}")
     holdout_metrics = evaluate_das_candidate(
@@ -210,6 +241,12 @@ def run_das_pipeline(
         "split": holdout_bank.split,
         **holdout_metrics,
     }
+    if config.verbose:
+        print(
+            f"[DAS] holdout variable={train_bank.target_var} "
+            f"site={best_site.label} dim={int(best['subspace_dim'])} "
+            f"exact_acc={float(holdout_metrics['exact_acc']):.4f}"
+        )
     return {
         "target_var": train_bank.target_var,
         "training_stopping_rule": {

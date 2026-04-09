@@ -203,6 +203,12 @@ def _select_hyperparameters(
     top_k_values = tuple(range(1, normalized_transport.shape[1] + 1)) if config.top_k_values is None else tuple(config.top_k_values)
     best = None
     sweep_records: list[dict[str, object]] = []
+    if config.selection_verbose:
+        print(
+            f"[{config.method.upper()}] calibration start variable={calibration_bank.target_var} "
+            f"signature_mode={config.signature_mode} top_k_values={list(top_k_values)} "
+            f"lambda_values={list(config.lambda_values)}"
+        )
     for top_k in top_k_values:
         truncated = truncate_transport_rows(normalized_transport, int(top_k), renormalize=True)
         for strength in config.lambda_values:
@@ -225,8 +231,20 @@ def _select_hyperparameters(
                 "exact_acc": float(result["exact_acc"]),
             }
             sweep_records.append(candidate)
+            if config.selection_verbose:
+                print(
+                    f"[{config.method.upper()}] variable={calibration_bank.target_var} "
+                    f"top_k={int(top_k)} lambda={float(strength):g} "
+                    f"calibration_exact_acc={float(candidate['exact_acc']):.4f}"
+                )
             if best is None or float(candidate["exact_acc"]) > float(best["exact_acc"]):
                 best = candidate
+                if config.selection_verbose:
+                    print(
+                        f"[{config.method.upper()}] new best variable={calibration_bank.target_var} "
+                        f"top_k={int(top_k)} lambda={float(strength):g} "
+                        f"calibration_exact_acc={float(candidate['exact_acc']):.4f}"
+                    )
     if best is None:
         raise RuntimeError(f"Failed to select OT/UOT hyperparameters for {calibration_bank.target_var}")
     return best, sweep_records
@@ -245,6 +263,12 @@ def run_alignment_pipeline(
 ) -> dict[str, object]:
     """Run OT or UOT for one MCQA target variable."""
     device = torch.device(device)
+    if config.selection_verbose:
+        print(
+            f"[{config.method.upper()}] start variable={fit_bank.target_var} "
+            f"signature_mode={config.signature_mode} candidate_sites={len(sites)} "
+            f"epsilon={float(config.epsilon):g} tau={float(config.tau):g}"
+        )
     base_logits = collect_base_logits(model=model, bank=fit_bank, batch_size=config.batch_size, device=device)
     site_signatures = collect_site_signatures(
         model=model,
@@ -294,6 +318,11 @@ def run_alignment_pipeline(
     holdout_result["calibration_exact_acc"] = float(selected["result"]["exact_acc"])
     holdout_result["signature_mode"] = str(config.signature_mode)
     holdout_result["selected_transport_nonzero"] = int((selected_transport[0] > 0.0).sum())
+    if config.selection_verbose:
+        print(
+            f"[{config.method.upper()}] holdout variable={fit_bank.target_var} "
+            f"top_k={top_k} lambda={strength:g} exact_acc={float(holdout_result['exact_acc']):.4f}"
+        )
     return {
         "target_var": fit_bank.target_var,
         "signature_mode": config.signature_mode,

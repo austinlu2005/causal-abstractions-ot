@@ -59,6 +59,7 @@ def ensure_hf_login(token: str | None, prompt_login: bool) -> str | None:
 def main() -> None:
     device = resolve_device(DEVICE)
     hf_token = ensure_hf_login(HF_TOKEN, PROMPT_HF_LOGIN)
+    print(f"[run] starting MCQA run model={MODEL_NAME} device={device}")
     model, tokenizer, causal_model, token_positions, filtered_datasets = load_filtered_mcqa_pipeline(
         model_name=MODEL_NAME,
         device=DEVICE,
@@ -66,6 +67,7 @@ def main() -> None:
         dataset_size=DATASET_SIZE,
         hf_token=hf_token,
     )
+    print("[run] building pair banks")
     banks_by_split, data_metadata = build_pair_banks(
         tokenizer=tokenizer,
         causal_model=causal_model,
@@ -74,6 +76,7 @@ def main() -> None:
         counterfactual_names=tuple(COUNTERFACTUAL_NAMES),
         target_vars=tuple(TARGET_VARS),
     )
+    print(f"[run] built splits={list(banks_by_split.keys())}")
     all_payloads = []
     for signature_mode in SIGNATURE_MODES:
         for epsilon in OT_EPSILONS:
