@@ -6,6 +6,10 @@ from dataclasses import dataclass
 
 import numpy as np
 import torch
+try:
+    from tqdm.auto import tqdm
+except Exception:  # pragma: no cover
+    tqdm = None
 
 from . import _env  # noqa: F401
 from .data import MCQAPairBank
@@ -368,43 +372,50 @@ def _select_hyperparameters(
             f"signature_mode={config.signature_mode} top_k_values={list(top_k_values)} "
             f"lambda_values={list(config.lambda_values)}"
         )
-    for top_k in top_k_values:
-        truncated = truncate_transport_rows(normalized_transport, int(top_k), renormalize=True)
-        for strength in config.lambda_values:
-            result, ranking = _evaluate_soft_intervention(
-                model=model,
-                bank=calibration_bank,
-                sites=sites,
-                selected_transport=truncated,
-                top_k=int(top_k),
-                strength=float(strength),
-                batch_size=batch_size,
-                device=device,
-                tokenizer=tokenizer,
-                include_details=False,
+    calibration_candidates = [(int(top_k), float(strength)) for top_k in top_k_values for strength in config.lambda_values]
+    candidate_iterator = calibration_candidates
+    if config.selection_verbose and tqdm is not None:
+        candidate_iterator = tqdm(
+            calibration_candidates,
+            desc=f"{config.method.upper()} calibration sweep ({calibration_bank.target_var})",
+            leave=False,
+        )
+    for top_k, strength in candidate_iterator:
+        truncated = truncate_transport_rows(normalized_transport, top_k, renormalize=True)
+        result, ranking = _evaluate_soft_intervention(
+            model=model,
+            bank=calibration_bank,
+            sites=sites,
+            selected_transport=truncated,
+            top_k=top_k,
+            strength=strength,
+            batch_size=batch_size,
+            device=device,
+            tokenizer=tokenizer,
+            include_details=False,
+        )
+        candidate = {
+            "top_k": top_k,
+            "lambda": strength,
+            "result": result,
+            "ranking": ranking,
+            "exact_acc": float(result["exact_acc"]),
+        }
+        sweep_records.append(candidate)
+        if config.selection_verbose:
+            print(
+                f"[{config.method.upper()}] variable={calibration_bank.target_var} "
+                f"top_k={int(top_k)} lambda={float(strength):g} "
+                f"calibration_exact_acc={float(candidate['exact_acc']):.4f}"
             )
-            candidate = {
-                "top_k": int(top_k),
-                "lambda": float(strength),
-                "result": result,
-                "ranking": ranking,
-                "exact_acc": float(result["exact_acc"]),
-            }
-            sweep_records.append(candidate)
+        if best is None or float(candidate["exact_acc"]) > float(best["exact_acc"]):
+            best = candidate
             if config.selection_verbose:
                 print(
-                    f"[{config.method.upper()}] variable={calibration_bank.target_var} "
+                    f"[{config.method.upper()}] new best variable={calibration_bank.target_var} "
                     f"top_k={int(top_k)} lambda={float(strength):g} "
                     f"calibration_exact_acc={float(candidate['exact_acc']):.4f}"
                 )
-            if best is None or float(candidate["exact_acc"]) > float(best["exact_acc"]):
-                best = candidate
-                if config.selection_verbose:
-                    print(
-                        f"[{config.method.upper()}] new best variable={calibration_bank.target_var} "
-                        f"top_k={int(top_k)} lambda={float(strength):g} "
-                        f"calibration_exact_acc={float(candidate['exact_acc']):.4f}"
-                    )
     if best is None:
         raise RuntimeError(f"Failed to select OT/UOT hyperparameters for {calibration_bank.target_var}")
     return best, sweep_records
@@ -438,6 +449,7 @@ def run_alignment_pipeline(
         batch_size=config.batch_size,
         device=device,
         signature_mode=config.signature_mode,
+        show_progress=config.selection_verbose,
     )
     from .metrics import build_variable_signature
 

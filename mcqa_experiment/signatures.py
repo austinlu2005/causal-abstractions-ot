@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 import torch
+try:
+    from tqdm.auto import tqdm
+except Exception:  # pragma: no cover
+    tqdm = None
 
 from .data import MCQAPairBank
 from .intervention import forward_factual_logits, run_soft_residual_intervention
@@ -64,11 +68,15 @@ def collect_site_signatures(
     batch_size: int,
     device: torch.device,
     signature_mode: str,
+    show_progress: bool = False,
 ) -> torch.Tensor:
     """Measure each residual site's intervention effect signature."""
     signatures = []
+    site_iterator = sites
+    if show_progress and tqdm is not None:
+        site_iterator = tqdm(sites, desc=f"Building {signature_mode} signatures", leave=False)
     with torch.no_grad():
-        for site in sites:
+        for site in site_iterator:
             site_logits_chunks = []
             for start in range(0, bank.size, batch_size):
                 end = min(start + batch_size, bank.size)

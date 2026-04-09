@@ -7,6 +7,9 @@ from collections import defaultdict
 from .runtime import ensure_parent_dir
 
 
+SPLIT_PRINT_ORDER = ("train", "calibration", "test")
+
+
 def summarize_method_records(records: list[dict[str, object]]) -> list[dict[str, object]]:
     grouped: dict[str, list[dict[str, object]]] = defaultdict(list)
     for record in records:
@@ -39,11 +42,13 @@ def format_summary(
         "",
         "data:",
     ]
-    for split, payload in sorted(data_metadata.items()):
-        lines.append(f"{split}: {payload}")
+    for split in SPLIT_PRINT_ORDER:
+        if split in data_metadata:
+            lines.append(f"{split}: {data_metadata[split]}")
     lines.append("")
     lines.append("pair bank summary:")
-    for split, split_metadata in sorted(data_metadata.items()):
+    for split in SPLIT_PRINT_ORDER:
+        split_metadata = data_metadata.get(split)
         if isinstance(split_metadata, dict) and split_metadata:
             sample_stats = next(iter(split_metadata.values()))
             lines.append(

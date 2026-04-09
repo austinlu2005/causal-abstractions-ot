@@ -16,6 +16,7 @@ RUN_TIMESTAMP = os.environ.get("RESULTS_TIMESTAMP") or datetime.now().strftime("
 RUN_DIR = Path("results") / f"{RUN_TIMESTAMP}_mcqa"
 OUTPUT_PATH = RUN_DIR / "mcqa_run_results.json"
 SUMMARY_PATH = RUN_DIR / "mcqa_run_summary.txt"
+SPLIT_PRINT_ORDER = ("train", "calibration", "test")
 
 MODEL_NAME = "google/gemma-2-2b"
 HF_TOKEN = os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")
@@ -77,7 +78,8 @@ def main() -> None:
         target_vars=tuple(TARGET_VARS),
     )
     print(f"[run] built splits={list(banks_by_split.keys())}")
-    for split, split_metadata in sorted(data_metadata.items()):
+    for split in SPLIT_PRINT_ORDER:
+        split_metadata = data_metadata.get(split)
         if isinstance(split_metadata, dict) and split_metadata:
             sample_stats = next(iter(split_metadata.values()))
             print(
