@@ -6,15 +6,6 @@ from dataclasses import dataclass
 
 import numpy as np
 import torch
-from scipy.spatial.distance import cdist
-
-from equality_experiment.ot import (
-    _squared_euclidean_cost,
-    _transport_validation_stats,
-    _is_valid_balanced_transport,
-    sinkhorn_uniform_ot,
-    sinkhorn_unbalanced_ot,
-)
 
 from . import _env  # noqa: F401
 from .data import MCQAPairBank
@@ -22,6 +13,171 @@ from .intervention import run_soft_residual_intervention
 from .metrics import metrics_from_logits, prediction_details_from_logits
 from .signatures import collect_base_logits, collect_site_signatures
 from .sites import ResidualSite
+
+
+def _squared_euclidean_cost(u_points: torch.Tensor, v_points: torch.Tensor) -> torch.Tensor:
+    """Compute squared Euclidean transport costs between two point clouds."""
+    u = u_points.to(dtype=torch.float32)
+    v = v_points.to(dtype=torch.float32)
+    return torch.cdist(u, v, p=2).pow(2)
+
+
+def _balanced_marginal_error(pi: torch.Tensor, a: torch.Tensor, b: torch.Tensor) -> float:
+    """Compute the max absolute marginal violation for a balanced transport plan."""
+    row_error = torch.max(torch.abs(pi.sum(dim=1) - a))
+    col_error = torch.max(torch.abs(pi.sum(dim=0) - b))
+    return float(torch.maximum(row_error, col_error).item())
+
+
+def _transport_validation_stats(
+    transport: np.ndarray,
+    p: np.ndarray,
+    q: np.ndarray,
+) -> dict[str, float]:
+    """Summarize mass and marginal residuals for a candidate balanced transport."""
+    transport = np.asarray(transport, dtype=float)
+    row_residual = float(np.max(np.abs(transport.sum(axis=1) - p))) if transport.size else float("inf")
+    col_residual = float(np.max(np.abs(transport.sum(axis=0) - q))) if transport.size else float("inf")
+    total_mass = float(transport.sum())
+    return {
+        "matched_mass": total_mass,
+        "max_row_residual": row_residual,
+        "max_col_residual": col_residual,
+    }
+
+
+def _is_valid_balanced_transport(
+    transport: np.ndarray,
+    p: np.ndarray,
+    q: np.ndarray,
+    tol: float,
+) -> bool:
+    """Return True only for finite, nonnegative, mass-preserving balanced couplings."""
+    transport = np.asarray(transport, dtype=float)
+    if transport.shape != (p.shape[0], q.shape[0]):
+        return False
+    if not np.isfinite(transport).all():
+        return False
+    if np.any(transport < 0.0):
+        return False
+    stats = _transport_validation_stats(transport, p, q)
+    residual_tol = max(float(tol), 1e-6)
+    mass_tol = max(float(tol), 1e-6)
+    return (
+        abs(stats["matched_mass"] - 1.0) <= mass_tol
+        and stats["max_row_residual"] <= residual_tol
+        and stats["max_col_residual"] <= residual_tol
+    )
+
+
+def sinkhorn_uniform_ot(
+    u_points: torch.Tensor,
+    v_points: torch.Tensor,
+    epsilon: float,
+    n_iter: int,
+    temperature: float = 1.0,
+    tol: float = 1e-9,
+) -> tuple[torch.Tensor, float]:
+    """Entropic OT with uniform marginals and squared Euclidean cost."""
+    if epsilon <= 0:
+        raise ValueError("epsilon must be > 0")
+    if temperature <= 0:
+        raise ValueError("temperature must be > 0")
+    if n_iter <= 0:
+        raise ValueError("n_iter must be > 0")
+    if tol < 0:
+        raise ValueError("tol must be >= 0")
+
+    u = u_points.to(dtype=torch.float32)
+    v = v_points.to(dtype=torch.float32)
+    m, n = u.size(0), v.size(0)
+
+    a = torch.full((m,), 1.0 / m, dtype=torch.float32, device=u.device)
+    b = torch.full((n,), 1.0 / n, dtype=torch.float32, device=v.device)
+    cost = _squared_euclidean_cost(u, v)
+    kernel = torch.exp(-cost / (epsilon * temperature)).clamp_min(1e-30)
+
+    r = torch.ones_like(a)
+    c = torch.ones_like(b)
+    for _ in range(n_iter):
+        kr = kernel @ c
+        r = a / kr.clamp_min(1e-30)
+        kt = kernel.transpose(0, 1) @ r
+        c = b / kt.clamp_min(1e-30)
+        pi = r[:, None] * kernel * c[None, :]
+        if _balanced_marginal_error(pi, a, b) <= float(tol):
+            break
+
+    pi = r[:, None] * kernel * c[None, :]
+    ot_cost = float((pi * cost).sum().item())
+    return pi, ot_cost
+
+
+def sinkhorn_unbalanced_ot(
+    u_points: torch.Tensor,
+    v_points: torch.Tensor,
+    epsilon: float,
+    n_iter: int,
+    temperature: float = 1.0,
+    tau_abstract: float = 1.0e6,
+    tau_neural: float = 1.0,
+) -> tuple[torch.Tensor, dict[str, float]]:
+    """Entropic unbalanced OT with KL penalties on marginals."""
+    if epsilon <= 0:
+        raise ValueError("epsilon must be > 0")
+    if temperature <= 0:
+        raise ValueError("temperature must be > 0")
+    if n_iter <= 0:
+        raise ValueError("n_iter must be > 0")
+    if tau_abstract <= 0 or tau_neural <= 0:
+        raise ValueError("tau_abstract and tau_neural must be > 0")
+
+    u = u_points.to(dtype=torch.float32)
+    v = v_points.to(dtype=torch.float32)
+    m, n = u.size(0), v.size(0)
+
+    a = torch.full((m,), 1.0 / m, dtype=torch.float32, device=u.device)
+    b = torch.full((n,), 1.0 / n, dtype=torch.float32, device=v.device)
+    cost = _squared_euclidean_cost(u, v)
+    kernel = torch.exp(-cost / (epsilon * temperature)).clamp_min(1e-30)
+
+    rho_a = float(tau_abstract / (tau_abstract + epsilon))
+    rho_b = float(tau_neural / (tau_neural + epsilon))
+
+    r = torch.ones_like(a)
+    c = torch.ones_like(b)
+    for _ in range(n_iter):
+        kr = kernel @ c
+        r = (a / kr.clamp_min(1e-30)).pow(rho_a)
+        kt = kernel.transpose(0, 1) @ r
+        c = (b / kt.clamp_min(1e-30)).pow(rho_b)
+
+    pi = r[:, None] * kernel * c[None, :]
+    pi_row = pi.sum(dim=1)
+    pi_col = pi.sum(dim=0)
+    transport_cost = float((pi * cost).sum().item())
+    kl_row = float(
+        (
+            pi_row * torch.log(pi_row.clamp_min(1e-30) / a.clamp_min(1e-30))
+            - pi_row
+            + a
+        ).sum().item()
+    )
+    kl_col = float(
+        (
+            pi_col * torch.log(pi_col.clamp_min(1e-30) / b.clamp_min(1e-30))
+            - pi_col
+            + b
+        ).sum().item()
+    )
+    total_obj = transport_cost + float(tau_abstract) * kl_row + float(tau_neural) * kl_col
+    return pi, {
+        "transport_cost": transport_cost,
+        "kl_abstract": kl_row,
+        "kl_neural": kl_col,
+        "estimated_cost": total_obj,
+        "matched_mass": float(pi.sum().item()),
+    }
 
 
 @dataclass(frozen=True)
