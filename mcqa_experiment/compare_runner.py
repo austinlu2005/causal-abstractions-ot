@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from dataclasses import asdict
 from pathlib import Path
 from time import perf_counter
 
@@ -133,6 +134,11 @@ def run_comparison(
         summary_records=summary_records,
     )
     payload = {
+        "config": {
+            **asdict(config),
+            "output_path": str(config.output_path),
+            "summary_path": str(config.summary_path),
+        },
         "model_name": config.model_name,
         "methods": list(config.methods),
         "target_vars": list(config.target_vars),

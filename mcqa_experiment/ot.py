@@ -19,7 +19,7 @@ from equality_experiment.ot import (
 from . import _env  # noqa: F401
 from .data import MCQAPairBank
 from .intervention import run_soft_residual_intervention
-from .metrics import metrics_from_logits
+from .metrics import metrics_from_logits, prediction_details_from_logits
 from .signatures import collect_base_logits, collect_site_signatures
 from .sites import ResidualSite
 
@@ -148,6 +148,7 @@ def _evaluate_soft_intervention(
     batch_size: int,
     device: torch.device,
     tokenizer,
+    include_details: bool = False,
 ) -> tuple[dict[str, object], list[dict[str, object]]]:
     site_weights = {
         sites[index]: float(selected_transport[0, index])
@@ -186,6 +187,8 @@ def _evaluate_soft_intervention(
         "selected_site_labels": [site.label for site in site_weights],
         **metrics_from_logits(logits, bank, tokenizer=tokenizer),
     }
+    if include_details:
+        record["prediction_details"] = prediction_details_from_logits(logits, bank, tokenizer=tokenizer)
     return record, ranking
 
 
@@ -222,6 +225,7 @@ def _select_hyperparameters(
                 batch_size=batch_size,
                 device=device,
                 tokenizer=tokenizer,
+                include_details=False,
             )
             candidate = {
                 "top_k": int(top_k),
@@ -302,6 +306,18 @@ def run_alignment_pipeline(
     top_k = int(selected["top_k"])
     strength = float(selected["lambda"])
     selected_transport = truncate_transport_rows(normalized_transport, top_k, renormalize=True)
+    selected_calibration_result, selected_calibration_ranking = _evaluate_soft_intervention(
+        model=model,
+        bank=calibration_bank,
+        sites=sites,
+        selected_transport=selected_transport,
+        top_k=top_k,
+        strength=strength,
+        batch_size=config.batch_size,
+        device=device,
+        tokenizer=tokenizer,
+        include_details=True,
+    )
     holdout_result, holdout_ranking = _evaluate_soft_intervention(
         model=model,
         bank=holdout_bank,
@@ -312,6 +328,7 @@ def run_alignment_pipeline(
         batch_size=config.batch_size,
         device=device,
         tokenizer=tokenizer,
+        include_details=True,
     )
     holdout_result["method"] = config.method
     holdout_result["selection_exact_acc"] = float(selected["result"]["exact_acc"])
@@ -335,6 +352,8 @@ def run_alignment_pipeline(
             "lambda": strength,
             "signature_mode": config.signature_mode,
         },
+        "selected_calibration_result": selected_calibration_result,
+        "selected_calibration_ranking": selected_calibration_ranking,
         "ranking": holdout_ranking,
         "calibration_sweep": calibration_sweep,
         "results": [holdout_result],

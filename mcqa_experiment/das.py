@@ -9,7 +9,7 @@ from torch.utils.data import DataLoader
 
 from .data import MCQAPairBank, MCQAPairDataset
 from .intervention import DASSubspaceIntervention, run_das_residual_intervention
-from .metrics import cross_entropy_for_bank, metrics_from_logits
+from .metrics import cross_entropy_for_bank, metrics_from_logits, prediction_details_from_logits
 from .sites import ResidualSite
 
 
@@ -96,11 +96,6 @@ def train_das_candidate(
             epoch_losses.append(float(loss.detach().cpu()))
         epoch_loss = sum(epoch_losses) / max(len(epoch_losses), 1)
         losses.append(epoch_loss)
-        if verbose:
-            print(
-                f"[DAS] var={bank.target_var} site={site.label} dim={int(subspace_dim)} "
-                f"epoch={epoch_index + 1} loss={float(epoch_loss):.6f}"
-            )
         if best_loss is None or epoch_loss < float(best_loss) * (1.0 - float(plateau_rel_delta)):
             best_loss = epoch_loss
             plateau_steps = 0
@@ -120,7 +115,8 @@ def evaluate_das_candidate(
     batch_size: int,
     device: torch.device,
     tokenizer,
-) -> dict[str, float]:
+    return_details: bool = False,
+) -> dict[str, object]:
     loader = DataLoader(MCQAPairDataset(bank), batch_size=batch_size, shuffle=False)
     logits_all = []
     for batch in loader:
@@ -137,7 +133,10 @@ def evaluate_das_candidate(
         )
         logits_all.append(logits.detach().cpu())
     full_logits = torch.cat(logits_all, dim=0)
-    return metrics_from_logits(full_logits, bank, tokenizer=tokenizer)
+    metrics = metrics_from_logits(full_logits, bank, tokenizer=tokenizer)
+    if return_details:
+        metrics["prediction_details"] = prediction_details_from_logits(full_logits, bank, tokenizer=tokenizer)
+    return metrics
 
 
 def run_das_pipeline(
@@ -195,6 +194,7 @@ def run_das_pipeline(
                 batch_size=config.batch_size,
                 device=device,
                 tokenizer=tokenizer,
+                return_details=False,
             )
             record = {
                 "method": "das",
@@ -213,7 +213,8 @@ def run_das_pipeline(
             if config.verbose:
                 print(
                     f"[DAS] calibration variable={train_bank.target_var} site={site.label} "
-                    f"dim={int(subspace_dim)} exact_acc={float(calibration_metrics['exact_acc']):.4f}"
+                    f"dim={int(subspace_dim)} epochs={len(loss_history)} "
+                    f"exact_acc={float(calibration_metrics['exact_acc']):.4f}"
                 )
             if best is None or float(record["selection_exact_acc"]) > float(best["selection_exact_acc"]):
                 best = record
@@ -235,6 +236,17 @@ def run_das_pipeline(
         batch_size=config.batch_size,
         device=device,
         tokenizer=tokenizer,
+        return_details=True,
+    )
+    selected_calibration_metrics = evaluate_das_candidate(
+        model=model,
+        bank=calibration_bank,
+        site=best_site,
+        intervention=best_intervention,
+        batch_size=config.batch_size,
+        device=device,
+        tokenizer=tokenizer,
+        return_details=True,
     )
     result = {
         **best,
@@ -255,6 +267,7 @@ def run_das_pipeline(
             "plateau_patience": config.plateau_patience,
             "plateau_rel_delta": config.plateau_rel_delta,
         },
+        "selected_calibration_metrics": selected_calibration_metrics,
         "search_records": {train_bank.target_var: search_records},
         "results": [result],
     }

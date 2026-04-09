@@ -47,6 +47,35 @@ def metrics_from_logits(logits: torch.Tensor, bank: MCQAPairBank, tokenizer=None
     return metrics
 
 
+def prediction_details_from_logits(logits: torch.Tensor, bank: MCQAPairBank, tokenizer=None) -> dict[str, object]:
+    """Return parse-friendly per-example prediction details for one bank."""
+    target_logits = gather_variable_logits(logits, bank)
+    predictions = target_logits.argmax(dim=-1)
+    labels = bank.labels.to(predictions.device)
+    details: dict[str, object] = {
+        "labels": labels.detach().cpu().tolist(),
+        "predictions": predictions.detach().cpu().tolist(),
+        "correct": (predictions == labels).detach().cpu().to(torch.int64).tolist(),
+        "target_logits": target_logits.detach().cpu().tolist(),
+        "base_raw_inputs": [str(item["raw_input"]) for item in bank.base_inputs],
+        "source_raw_inputs": [str(item["raw_input"]) for item in bank.source_inputs],
+        "expected_answer_texts": list(bank.expected_answer_texts),
+    }
+    if bank.target_var == "answer":
+        predicted_token_ids = torch.gather(
+            bank.source_symbol_token_ids.to(logits.device),
+            dim=1,
+            index=predictions.view(-1, 1),
+        ).view(-1)
+        details["predicted_token_ids"] = predicted_token_ids.detach().cpu().tolist()
+        details["target_token_ids"] = bank.answer_token_ids.detach().cpu().tolist()
+        if tokenizer is not None:
+            details["predicted_text"] = [
+                tokenizer.decode([int(token_id)]) for token_id in predicted_token_ids.detach().cpu().tolist()
+            ]
+    return details
+
+
 def build_variable_signature(bank: MCQAPairBank, signature_mode: str) -> torch.Tensor:
     """Build the abstract-variable signature for one MCQA target variable."""
     if signature_mode == "whole_vocab_kl_t1":
