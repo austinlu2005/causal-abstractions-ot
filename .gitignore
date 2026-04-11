@@ -8,6 +8,7 @@ models/
 paper/
 results/
 .DS_Store
+MIB/
 
 # LaTeX build artifacts
 paper/*.aux
