@@ -21,12 +21,14 @@ SPLIT_PRINT_ORDER = ("train", "calibration", "test")
 MODEL_NAME = "google/gemma-2-2b"
 HF_TOKEN = os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")
 PROMPT_HF_LOGIN = True
+MCQA_DATASET_PATH = "jchang153/copycolors_mcqa"
+MCQA_DATASET_CONFIG = None
 METHODS = ["das"] #, "ot"]
 TARGET_VARS = ["answer_pointer"] #, "answer"]
 COUNTERFACTUAL_NAMES = ["answerPosition", "randomLetter", "answerPosition_randomLetter"]
-SPLIT_MODE = "pooled"  # "original" keeps HF train/validation/test; "pooled" repartitions filtered rows by ratio.
 SPLIT_RATIOS = (0.7, 0.15, 0.15)
 SPLIT_SEED = 0
+POOLED_TOTAL_EXAMPLES = None  # Optional cap on the total number of filtered pooled rows before repartitioning.
 
 LAYERS = "auto"
 TOKEN_POSITION_IDS = ["last_token"] # "correct_symbol", "correct_symbol_period", 
@@ -70,6 +72,8 @@ def main() -> None:
         batch_size=BATCH_SIZE,
         dataset_size=DATASET_SIZE,
         hf_token=hf_token,
+        dataset_path=MCQA_DATASET_PATH,
+        dataset_name=MCQA_DATASET_CONFIG,
     )
     print("[run] building pair banks")
     banks_by_split, data_metadata = build_pair_banks(
@@ -79,9 +83,9 @@ def main() -> None:
         datasets_by_name=filtered_datasets,
         counterfactual_names=tuple(COUNTERFACTUAL_NAMES),
         target_vars=tuple(TARGET_VARS),
-        split_mode=SPLIT_MODE,
         split_ratios=SPLIT_RATIOS,
         split_seed=SPLIT_SEED,
+        pooled_total_examples=POOLED_TOTAL_EXAMPLES,
     )
     print(f"[run] built splits={list(banks_by_split.keys())}")
     for split in SPLIT_PRINT_ORDER:

@@ -7,6 +7,7 @@ tests/__pycache__/
 models/
 paper/
 results/
+synthetic_datasets/
 .DS_Store
 MIB/
 

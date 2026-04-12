@@ -4,18 +4,19 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import os
+from pathlib import Path
 import random
 import re
 from typing import Callable
 
-from datasets import load_dataset
+from datasets import get_dataset_split_names, load_dataset
 import torch
 
 from .runtime import resolve_device
 
 
-DATASET_PATH = "mib-bench/copycolors_mcqa"
-DATASET_NAME = "4_answer_choices"
+DATASET_PATH = os.environ.get("MCQA_DATASET_PATH", "mib-bench/copycolors_mcqa")
+DATASET_NAME = os.environ.get("MCQA_DATASET_CONFIG", "4_answer_choices")
 
 CANONICAL_ANSWER_STRINGS = (" A", " B", " C", " D")
 CANONICAL_ANSWER_LABELS = ("A", "B", "C", "D")
@@ -209,9 +210,23 @@ def _load_counterfactual_rows(
     split: str,
     size: int | None = None,
     hf_token: str | None = None,
+    dataset_path: str | None = None,
+    dataset_name: str | None = None,
 ) -> dict[str, list[dict[str, object]]]:
     token = hf_token or os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")
-    dataset = load_dataset(DATASET_PATH, DATASET_NAME, split=split, token=token)
+    resolved_dataset_path = dataset_path or DATASET_PATH
+    resolved_dataset_name = dataset_name if dataset_name is not None else DATASET_NAME
+    dataset_path_obj = Path(resolved_dataset_path)
+    if dataset_path_obj.exists():
+        split_file = dataset_path_obj / f"{split}.jsonl"
+        if not split_file.exists():
+            raise FileNotFoundError(f"Expected local MCQA dataset file at {split_file}")
+        dataset = load_dataset("json", data_files={split: str(split_file)}, split=split)
+    else:
+        if resolved_dataset_name:
+            dataset = load_dataset(resolved_dataset_path, resolved_dataset_name, split=split, token=token)
+        else:
+            dataset = load_dataset(resolved_dataset_path, split=split, token=token)
     if size is not None:
         dataset = dataset.select(range(min(int(size), len(dataset))))
     sample = dataset[0]
@@ -238,11 +253,41 @@ def _load_counterfactual_rows(
     return datasets
 
 
-def load_public_mcqa_datasets(*, size: int | None = None, hf_token: str | None = None) -> dict[str, list[dict[str, object]]]:
+def load_public_mcqa_datasets(
+    *,
+    size: int | None = None,
+    hf_token: str | None = None,
+    dataset_path: str | None = None,
+    dataset_name: str | None = None,
+) -> dict[str, list[dict[str, object]]]:
     """Load public train/validation/test MCQA splits in the copied MIB structure."""
     datasets: dict[str, list[dict[str, object]]] = {}
-    for split in ("train", "validation", "test"):
-        datasets.update(_load_counterfactual_rows(split=split, size=size, hf_token=hf_token))
+    resolved_dataset_path = dataset_path or DATASET_PATH
+    resolved_dataset_name = dataset_name if dataset_name is not None else DATASET_NAME
+    dataset_path_obj = Path(resolved_dataset_path)
+    if dataset_path_obj.exists():
+        candidate_splits = tuple(
+            split_file.stem for split_file in sorted(dataset_path_obj.glob("*.jsonl")) if split_file.stem
+        )
+        if not candidate_splits:
+            raise FileNotFoundError(f"No .jsonl splits found under local dataset path {dataset_path_obj}")
+    else:
+        if resolved_dataset_name:
+            candidate_splits = tuple(
+                get_dataset_split_names(resolved_dataset_path, resolved_dataset_name, token=hf_token)
+            )
+        else:
+            candidate_splits = tuple(get_dataset_split_names(resolved_dataset_path, token=hf_token))
+    for split in candidate_splits:
+        datasets.update(
+            _load_counterfactual_rows(
+                split=split,
+                size=size,
+                hf_token=hf_token,
+                dataset_path=resolved_dataset_path,
+                dataset_name=resolved_dataset_name,
+            )
+        )
     return datasets
 
 
@@ -323,11 +368,11 @@ def build_pair_banks(
     datasets_by_name: dict[str, list[dict[str, object]]],
     counterfactual_names: tuple[str, ...],
     target_vars: tuple[str, ...],
-    split_mode: str = "original",
     split_ratios: tuple[float, float, float] = (0.7, 0.15, 0.15),
     split_seed: int = 0,
+    pooled_total_examples: int | None = None,
 ) -> tuple[dict[str, dict[str, MCQAPairBank]], dict[str, object]]:
-    """Build train/calibration/test banks for both target variables."""
+    """Build pooled train/calibration/test banks for both target variables."""
     canonical_answer_token_ids = _validate_answer_tokenization(tokenizer)
     def make_bank(output_split: str, split_dataset_names: list[str], combined_rows: list[dict[str, object]]) -> dict[str, MCQAPairBank]:
         base_inputs = [row["input"] for row in combined_rows]
@@ -430,55 +475,35 @@ def build_pair_banks(
         return banks
 
     banks_by_split: dict[str, dict[str, MCQAPairBank]] = {"train": {}, "calibration": {}, "test": {}}
-    if split_mode == "original":
-        split_map = {
-            "train": "train",
-            "validation": "calibration",
-            "test": "test",
-        }
-        for hf_split, output_split in split_map.items():
-            split_dataset_names = [
-                f"{counterfactual_name}_{hf_split}"
-                for counterfactual_name in counterfactual_names
-                if f"{counterfactual_name}_{hf_split}" in datasets_by_name
-            ]
-            combined_rows: list[dict[str, object]] = []
-            for dataset_name in split_dataset_names:
-                combined_rows.extend(datasets_by_name[dataset_name])
-            if not combined_rows:
-                raise ValueError(f"No MCQA rows found for split {hf_split}")
-            banks_by_split[output_split] = make_bank(output_split, split_dataset_names, combined_rows)
-    elif split_mode == "pooled":
-        pooled_dataset_names = []
-        pooled_rows: list[dict[str, object]] = []
-        for hf_split in ("train", "validation", "test"):
-            for counterfactual_name in counterfactual_names:
-                dataset_name = f"{counterfactual_name}_{hf_split}"
-                if dataset_name in datasets_by_name:
-                    pooled_dataset_names.append(dataset_name)
-                    pooled_rows.extend(datasets_by_name[dataset_name])
-        if not pooled_rows:
-            raise ValueError("No MCQA rows found for pooled split mode")
-        ratios = tuple(float(value) for value in split_ratios)
-        if len(ratios) != 3 or abs(sum(ratios) - 1.0) > 1e-6:
-            raise ValueError(f"split_ratios must be length 3 and sum to 1.0, got {split_ratios}")
-        rng = random.Random(int(split_seed))
-        shuffled_rows = list(pooled_rows)
-        rng.shuffle(shuffled_rows)
-        total = len(shuffled_rows)
-        train_end = int(total * ratios[0])
-        calibration_end = train_end + int(total * ratios[1])
-        split_rows = {
-            "train": shuffled_rows[:train_end],
-            "calibration": shuffled_rows[train_end:calibration_end],
-            "test": shuffled_rows[calibration_end:],
-        }
-        for output_split, combined_rows in split_rows.items():
-            if not combined_rows:
-                raise ValueError(f"No MCQA rows found for pooled output split {output_split}")
-            banks_by_split[output_split] = make_bank(output_split, pooled_dataset_names, combined_rows)
-    else:
-        raise ValueError(f"Unsupported split_mode {split_mode}")
+    pooled_dataset_names = []
+    pooled_rows: list[dict[str, object]] = []
+    for dataset_name in sorted(datasets_by_name):
+        counterfactual_name, _, _split_name = dataset_name.rpartition("_")
+        if counterfactual_name in counterfactual_names:
+            pooled_dataset_names.append(dataset_name)
+            pooled_rows.extend(datasets_by_name[dataset_name])
+    if not pooled_rows:
+        raise ValueError("No MCQA rows found for pooled bank construction")
+    ratios = tuple(float(value) for value in split_ratios)
+    if len(ratios) != 3 or abs(sum(ratios) - 1.0) > 1e-6:
+        raise ValueError(f"split_ratios must be length 3 and sum to 1.0, got {split_ratios}")
+    rng = random.Random(int(split_seed))
+    shuffled_rows = list(pooled_rows)
+    rng.shuffle(shuffled_rows)
+    if pooled_total_examples is not None:
+        shuffled_rows = shuffled_rows[: min(int(pooled_total_examples), len(shuffled_rows))]
+    total = len(shuffled_rows)
+    train_end = int(total * ratios[0])
+    calibration_end = train_end + int(total * ratios[1])
+    split_rows = {
+        "train": shuffled_rows[:train_end],
+        "calibration": shuffled_rows[train_end:calibration_end],
+        "test": shuffled_rows[calibration_end:],
+    }
+    for output_split, combined_rows in split_rows.items():
+        if not combined_rows:
+            raise ValueError(f"No MCQA rows found for pooled output split {output_split}")
+        banks_by_split[output_split] = make_bank(output_split, pooled_dataset_names, combined_rows)
     metadata = {
         split: {target_var: bank.metadata() for target_var, bank in banks.items()}
         for split, banks in banks_by_split.items()
@@ -493,6 +518,8 @@ def load_filtered_mcqa_pipeline(
     batch_size: int = 16,
     dataset_size: int | None = None,
     hf_token: str | None = None,
+    dataset_path: str | None = None,
+    dataset_name: str | None = None,
 ) -> tuple[object, object, MCQACausalModel, list[TokenPosition], dict[str, list[dict[str, object]]]]:
     """Load Gemma-2-2B, copy the MCQA task setup, and filter to correct examples."""
     import transformers
@@ -516,8 +543,18 @@ def load_filtered_mcqa_pipeline(
     causal_model = MCQACausalModel()
     token_positions = get_token_positions(tokenizer, causal_model)
     print(f"[load] token_positions={[token_position.id for token_position in token_positions]}")
-    print(f"[load] loading public MCQA datasets size_cap={dataset_size}")
-    public_datasets = load_public_mcqa_datasets(size=dataset_size, hf_token=hf_token)
+    resolved_dataset_path = dataset_path or DATASET_PATH
+    resolved_dataset_name = dataset_name if dataset_name is not None else DATASET_NAME
+    print(
+        f"[load] loading MCQA datasets path={resolved_dataset_path} "
+        f"config={resolved_dataset_name!r} size_cap={dataset_size}"
+    )
+    public_datasets = load_public_mcqa_datasets(
+        size=dataset_size,
+        hf_token=hf_token,
+        dataset_path=resolved_dataset_path,
+        dataset_name=resolved_dataset_name,
+    )
     print(f"[load] loaded datasets={sorted(public_datasets.keys())}")
     print("[load] starting factual filtering")
     filtered_datasets = filter_correct_examples(
