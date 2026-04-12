@@ -8,13 +8,23 @@ import torch.nn.functional as F
 from .data import MCQAPairBank
 
 
+def _gather_variant_logits(logits: torch.Tensor, variant_token_ids: torch.Tensor) -> torch.Tensor:
+    batch_size, num_classes, num_variants = variant_token_ids.shape
+    gathered = torch.gather(
+        logits,
+        dim=1,
+        index=variant_token_ids.to(logits.device).reshape(batch_size, num_classes * num_variants),
+    )
+    gathered = gathered.reshape(batch_size, num_classes, num_variants)
+    return gathered.max(dim=-1).values
+
+
 def gather_variable_logits(logits: torch.Tensor, bank: MCQAPairBank) -> torch.Tensor:
     """Project full-vocab logits into the task logits for the chosen target variable."""
     if bank.target_var == "answer_pointer":
-        gathered = torch.gather(logits, dim=1, index=bank.symbol_token_ids.to(logits.device))
-        return gathered
+        return _gather_variant_logits(logits, bank.symbol_variant_token_ids)
     if bank.target_var == "answer":
-        return torch.gather(logits, dim=1, index=bank.source_symbol_token_ids.to(logits.device))
+        return _gather_variant_logits(logits, bank.source_symbol_variant_token_ids)
     raise ValueError(f"Unsupported MCQA target variable {bank.target_var}")
 
 
@@ -40,7 +50,7 @@ def metrics_from_logits(logits: torch.Tensor, bank: MCQAPairBank, tokenizer=None
         decoded_acc = 0.0
         if decoded_predictions:
             decoded_acc = sum(
-                int(expected in decoded)
+                int(str(expected).strip() == str(decoded).strip())
                 for expected, decoded in zip(bank.expected_answer_texts, decoded_predictions)
             ) / len(decoded_predictions)
         metrics["decoded_answer_acc"] = float(decoded_acc)
@@ -88,7 +98,18 @@ def build_variable_signature(bank: MCQAPairBank, signature_mode: str) -> torch.T
             return (source_onehot - base_onehot).reshape(-1)
         if bank.target_var == "answer":
             source_onehot = F.one_hot(bank.labels.to(torch.long), num_classes=4).to(torch.float32)
-            base_matches = bank.source_symbol_token_ids.eq(bank.base_answer_token_ids.view(-1, 1))
+            base_answer_labels = [str(output["answer"]).strip() for output in bank.base_outputs]
+            source_symbol_labels = [
+                [str(source_input[f"symbol{index}"]).strip() for index in range(4)]
+                for source_input in bank.source_inputs
+            ]
+            base_matches = torch.tensor(
+                [
+                    [int(symbol_label == base_answer_label) for symbol_label in symbol_labels]
+                    for base_answer_label, symbol_labels in zip(base_answer_labels, source_symbol_labels)
+                ],
+                dtype=torch.float32,
+            )
             base_onehot = base_matches.to(torch.float32)
             return (source_onehot - base_onehot).reshape(-1)
     raise ValueError(f"Unsupported signature_mode={signature_mode}")

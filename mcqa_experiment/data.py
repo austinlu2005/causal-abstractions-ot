@@ -11,6 +11,10 @@ from typing import Callable
 
 from datasets import get_dataset_split_names, load_dataset
 import torch
+try:
+    from tqdm.auto import tqdm
+except Exception:  # pragma: no cover
+    tqdm = None
 
 from .runtime import resolve_device
 
@@ -95,7 +99,9 @@ class MCQAPairBank:
     base_position_by_id: dict[str, torch.Tensor]
     source_position_by_id: dict[str, torch.Tensor]
     symbol_token_ids: torch.Tensor
+    symbol_variant_token_ids: torch.Tensor
     source_symbol_token_ids: torch.Tensor
+    source_symbol_variant_token_ids: torch.Tensor
     canonical_answer_token_ids: torch.Tensor
     answer_token_ids: torch.Tensor
     base_answer_token_ids: torch.Tensor
@@ -134,7 +140,9 @@ class MCQAPairDataset(torch.utils.data.Dataset):
             "source_attention_mask": self.bank.source_attention_mask[index],
             "labels": self.bank.labels[index],
             "symbol_token_ids": self.bank.symbol_token_ids[index],
+            "symbol_variant_token_ids": self.bank.symbol_variant_token_ids[index],
             "source_symbol_token_ids": self.bank.source_symbol_token_ids[index],
+            "source_symbol_variant_token_ids": self.bank.source_symbol_variant_token_ids[index],
             "answer_token_id": self.bank.answer_token_ids[index],
             "base_answer_token_id": self.bank.base_answer_token_ids[index],
             "base_positions": {key: value[index] for key, value in self.bank.base_position_by_id.items()},
@@ -305,6 +313,10 @@ def _infer_next_token_ids(model, input_ids: torch.Tensor, attention_mask: torch.
     return logits[batch_indices, last_indices].argmax(dim=-1)
 
 
+def normalize_answer_text(text: str) -> str:
+    return str(text).strip()
+
+
 def filter_correct_examples(
     *,
     model,
@@ -319,9 +331,19 @@ def filter_correct_examples(
     for dataset_name, rows in datasets_by_name.items():
         print(f"[filter] dataset={dataset_name} total_rows={len(rows)}")
         prompts = [str(row["input"]["raw_input"]) for row in rows]
-        expected_answers = [str(causal_model.run_forward(row["input"])["answer"]) for row in rows]
+        expected_answers = [normalize_answer_text(str(causal_model.run_forward(row["input"])["answer"])) for row in rows]
+        expected_answer_variant_ids = [_encode_symbol_token_variants(expected, tokenizer) for expected in expected_answers]
         keep_mask: list[bool] = []
-        for start in range(0, len(rows), batch_size):
+        batch_starts = range(0, len(rows), batch_size)
+        batch_iterator = batch_starts
+        if tqdm is not None:
+            batch_iterator = tqdm(
+                batch_starts,
+                desc=f"Filtering {dataset_name}",
+                leave=False,
+                total=(len(rows) + batch_size - 1) // batch_size,
+            )
+        for start in batch_iterator:
             end = min(start + batch_size, len(rows))
             batch_prompts = prompts[start:end]
             encoded = tokenizer(
@@ -333,9 +355,13 @@ def filter_correct_examples(
             input_ids = encoded["input_ids"].to(device)
             attention_mask = encoded["attention_mask"].to(device)
             predicted_ids = _infer_next_token_ids(model, input_ids, attention_mask)
-            for predicted_id, expected in zip(predicted_ids.detach().cpu().tolist(), expected_answers[start:end]):
-                decoded = tokenizer.decode([int(predicted_id)])
-                keep_mask.append(expected in decoded)
+            for predicted_id, expected, expected_variants in zip(
+                predicted_ids.detach().cpu().tolist(),
+                expected_answers[start:end],
+                expected_answer_variant_ids[start:end],
+            ):
+                decoded = normalize_answer_text(tokenizer.decode([int(predicted_id)]))
+                keep_mask.append(int(predicted_id) in expected_variants or expected == decoded)
         filtered[dataset_name] = [row for row, keep in zip(rows, keep_mask) if keep]
         print(f"[filter] dataset={dataset_name} kept={len(filtered[dataset_name])}/{len(rows)}")
     return filtered
@@ -357,8 +383,24 @@ def _validate_answer_tokenization(tokenizer) -> torch.Tensor:
 def _encode_symbol_token(symbol: str, tokenizer) -> int:
     ids = tokenizer.encode(" " + str(symbol), add_special_tokens=False)
     if len(ids) != 1:
-        raise ValueError(f"Expected symbol {symbol!r} to map to one token, but got ids {ids}")
+        ids = tokenizer.encode(str(symbol), add_special_tokens=False)
+        if len(ids) != 1:
+            raise ValueError(f"Expected symbol {symbol!r} to map to one token, but got ids {ids}")
     return int(ids[0])
+
+
+def _encode_symbol_token_variants(symbol: str, tokenizer) -> tuple[int, int]:
+    symbol = normalize_answer_text(symbol)
+    variant_ids = []
+    for candidate in (" " + symbol, symbol):
+        ids = tokenizer.encode(candidate, add_special_tokens=False)
+        if len(ids) == 1:
+            variant_ids.append(int(ids[0]))
+    if not variant_ids:
+        raise ValueError(f"Expected symbol {symbol!r} to have at least one single-token encoding")
+    if len(variant_ids) == 1:
+        variant_ids.append(variant_ids[0])
+    return (variant_ids[0], variant_ids[1])
 
 
 def build_pair_banks(
@@ -407,9 +449,23 @@ def build_pair_banks(
             ],
             dtype=torch.long,
         )
+        symbol_variant_token_ids = torch.tensor(
+            [
+                [_encode_symbol_token_variants(str(base_input[f"symbol{index}"]), tokenizer) for index in range(4)]
+                for base_input in base_inputs
+            ],
+            dtype=torch.long,
+        )
         source_symbol_token_ids = torch.tensor(
             [
                 [_encode_symbol_token(str(source_input[f"symbol{index}"]), tokenizer) for index in range(4)]
+                for source_input in source_inputs
+            ],
+            dtype=torch.long,
+        )
+        source_symbol_variant_token_ids = torch.tensor(
+            [
+                [_encode_symbol_token_variants(str(source_input[f"symbol{index}"]), tokenizer) for index in range(4)]
                 for source_input in source_inputs
             ],
             dtype=torch.long,
@@ -466,12 +522,14 @@ def build_pair_banks(
                 base_position_by_id=base_position_by_id,
                 source_position_by_id=source_position_by_id,
                 symbol_token_ids=symbol_token_ids,
+                symbol_variant_token_ids=symbol_variant_token_ids,
                 source_symbol_token_ids=source_symbol_token_ids,
+                source_symbol_variant_token_ids=source_symbol_variant_token_ids,
                 canonical_answer_token_ids=canonical_answer_token_ids,
                 answer_token_ids=answer_token_ids,
                 base_answer_token_ids=base_answer_token_ids,
                 changed_mask=changed_mask,
-                expected_answer_texts=[str(source_output["answer"]) for source_output in source_outputs],
+                expected_answer_texts=[normalize_answer_text(str(source_output["answer"])) for source_output in source_outputs],
             )
         return banks
 
