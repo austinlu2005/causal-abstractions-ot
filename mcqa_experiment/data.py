@@ -457,7 +457,7 @@ def build_pair_banks(
     test_pool_size: int | None = None,
     pooled_total_examples: int | None = None,
 ) -> tuple[dict[str, dict[str, MCQAPairBank]], dict[str, object]]:
-    """Build pooled train/calibration/test banks with sensitive-only calibration/test."""
+    """Build pooled train/calibration/test banks with target-specific sensitive calibration/test sizes."""
     canonical_answer_token_ids = _validate_answer_tokenization(tokenizer)
     def make_bank(output_split: str, split_dataset_names: list[str], combined_rows: list[dict[str, object]]) -> dict[str, MCQAPairBank]:
         base_inputs = [row["input"] for row in combined_rows]
@@ -603,62 +603,62 @@ def build_pair_banks(
     total = len(shuffled_rows)
     resolved_train_pool_size = total if train_pool_size is None else int(train_pool_size)
     resolved_calibration_pool_size = 0 if calibration_pool_size is None else int(calibration_pool_size)
-    resolved_test_pool_size = max(0, total - resolved_train_pool_size - resolved_calibration_pool_size) if test_pool_size is None else int(test_pool_size)
+    resolved_test_pool_size = 0 if test_pool_size is None else int(test_pool_size)
     if resolved_train_pool_size < 0 or resolved_calibration_pool_size < 0 or resolved_test_pool_size < 0:
         raise ValueError(
             "train_pool_size, calibration_pool_size, and test_pool_size must be non-negative"
         )
-    requested_total = (
-        resolved_train_pool_size
-        + resolved_calibration_pool_size
-        + resolved_test_pool_size
-    )
-    if requested_total > total:
+    if resolved_train_pool_size > total:
         raise ValueError(
-            f"Requested pooled split sizes train={resolved_train_pool_size}, "
-            f"calibration={resolved_calibration_pool_size}, test={resolved_test_pool_size} "
-            f"(total={requested_total}), but only {total} filtered MCQA rows are available"
+            f"Requested train_pool_size={resolved_train_pool_size}, but only {total} filtered MCQA rows are available"
         )
-    train_end = resolved_train_pool_size
-    calibration_end = train_end + resolved_calibration_pool_size
-    test_end = calibration_end + resolved_test_pool_size
-    split_rows = {
-        "train": shuffled_rows[:train_end],
-        "calibration": shuffled_rows[train_end:calibration_end],
-        "test": shuffled_rows[calibration_end:test_end],
-    }
-    for output_split, combined_rows in split_rows.items():
-        if not combined_rows:
-            raise ValueError(f"No MCQA rows found for pooled output split {output_split}")
-        _base_outputs, _source_outputs, changed_masks = _compute_row_change_masks(combined_rows, causal_model)
-        shared_train_rows = list(combined_rows)
-        if output_split == "train":
-            train_rng = random.Random(f"{int(split_seed)}:{output_split}:shared")
-            train_rng.shuffle(shared_train_rows)
-        variable_rows: dict[str, list[dict[str, object]]] = {}
-        for target_var in target_vars:
-            changed_mask = changed_masks[target_var]
-            positive_rows = [row for row, changed in zip(combined_rows, changed_mask) if changed]
-            local_rng = random.Random(f"{int(split_seed)}:{output_split}:{target_var}")
-            local_rng.shuffle(positive_rows)
-            if output_split == "train":
-                selected_rows = list(shared_train_rows)
-                if not selected_rows:
-                    raise ValueError(f"No MCQA rows available for train bank target_var={target_var}")
-            else:
-                selected_rows = positive_rows
-                if not selected_rows:
-                    raise ValueError(
-                        f"No sensitive MCQA rows available for split={output_split} target_var={target_var}"
-                    )
-            variable_rows[target_var] = selected_rows
-        banks_by_split[output_split] = {}
-        for target_var, selected_rows in variable_rows.items():
-            banks_by_split[output_split][target_var] = make_bank(
-                output_split,
+    train_rows = shuffled_rows[:resolved_train_pool_size]
+    holdout_candidate_rows = shuffled_rows[resolved_train_pool_size:]
+    if not train_rows:
+        raise ValueError("No MCQA rows found for pooled train split")
+
+    # Train banks share the same raw train rows across target variables.
+    train_rng = random.Random(f"{int(split_seed)}:train:shared")
+    shared_train_rows = list(train_rows)
+    train_rng.shuffle(shared_train_rows)
+    banks_by_split["train"] = {}
+    train_banks = make_bank("train", pooled_dataset_names, shared_train_rows)
+    for target_var in target_vars:
+        banks_by_split["train"][target_var] = train_banks[target_var]
+
+    # Calibration/test are target-specific and sized by number of sensitive examples.
+    _base_outputs, _source_outputs, holdout_changed_masks = _compute_row_change_masks(holdout_candidate_rows, causal_model)
+    for target_var in target_vars:
+        changed_mask = holdout_changed_masks[target_var]
+        positive_rows = [row for row, changed in zip(holdout_candidate_rows, changed_mask) if changed]
+        local_rng = random.Random(f"{int(split_seed)}:holdout:{target_var}")
+        local_rng.shuffle(positive_rows)
+        required = resolved_calibration_pool_size + resolved_test_pool_size
+        if len(positive_rows) < required:
+            raise ValueError(
+                f"Requested calibration_pool_size={resolved_calibration_pool_size} and "
+                f"test_pool_size={resolved_test_pool_size} for target_var={target_var}, "
+                f"but only {len(positive_rows)} sensitive rows are available after train allocation"
+            )
+        calibration_rows = positive_rows[:resolved_calibration_pool_size]
+        test_rows = positive_rows[resolved_calibration_pool_size:required]
+        if resolved_calibration_pool_size > 0:
+            banks_by_split["calibration"][target_var] = make_bank(
+                "calibration",
                 pooled_dataset_names,
-                selected_rows,
+                calibration_rows,
             )[target_var]
+        if resolved_test_pool_size > 0:
+            banks_by_split["test"][target_var] = make_bank(
+                "test",
+                pooled_dataset_names,
+                test_rows,
+            )[target_var]
+
+    if resolved_calibration_pool_size == 0:
+        banks_by_split["calibration"] = {}
+    if resolved_test_pool_size == 0:
+        banks_by_split["test"] = {}
     metadata = {
         split: {target_var: bank.metadata() for target_var, bank in banks.items()}
         for split, banks in banks_by_split.items()
