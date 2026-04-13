@@ -8,7 +8,9 @@ from huggingface_hub import login as hf_login
 
 from mcqa_experiment.compare_runner import CompareExperimentConfig, run_comparison
 from mcqa_experiment.data import build_pair_banks, load_filtered_mcqa_pipeline
+from mcqa_experiment.ot import OTConfig, prepare_alignment_artifacts
 from mcqa_experiment.runtime import resolve_device
+from mcqa_experiment.sites import enumerate_residual_sites
 
 
 DEVICE = "cuda"
@@ -111,80 +113,116 @@ def main() -> None:
                 )
     selected_layers = list(range(int(model.config.num_hidden_layers))) if LAYERS == "auto" else list(LAYERS)
     print(f"[run] selected_layers={selected_layers}")
+    token_position_ids = tuple(token_position.id for token_position in token_positions)
     all_payloads = []
-    for resolution in RESOLUTIONS:
+    for method in METHODS:
         for signature_mode in SIGNATURE_MODES:
-            for epsilon in OT_EPSILONS:
-                methods = tuple(method for method in METHODS if method != "uot")
-                config = CompareExperimentConfig(
-                    model_name=MODEL_NAME,
-                    output_path=RUN_DIR / f"mcqa_res-{int(resolution)}_sig-{signature_mode}_eps-{epsilon:g}.json",
-                    summary_path=RUN_DIR / f"mcqa_res-{int(resolution)}_sig-{signature_mode}_eps-{epsilon:g}.txt",
-                    methods=methods,
-                    target_vars=tuple(TARGET_VARS),
-                    batch_size=BATCH_SIZE,
-                    ot_epsilon=float(epsilon),
-                    signature_mode=signature_mode,
-                    ot_top_k_values=tuple(OT_TOP_K_VALUES),
-                    ot_lambdas=tuple(OT_LAMBDAS),
-                    das_max_epochs=DAS_MAX_EPOCHS,
-                    das_min_epochs=DAS_MIN_EPOCHS,
-                    das_plateau_patience=DAS_PLATEAU_PATIENCE,
-                    das_plateau_rel_delta=DAS_PLATEAU_REL_DELTA,
-                    das_learning_rate=DAS_LEARNING_RATE,
-                    das_subspace_dims=tuple(DAS_SUBSPACE_DIMS),
-                    resolution=int(resolution),
-                    layers=tuple(selected_layers),
-                    token_position_ids=None if TOKEN_POSITION_IDS is None else tuple(TOKEN_POSITION_IDS),
-                )
-                all_payloads.append(
-                    run_comparison(
-                        model=model,
-                        tokenizer=tokenizer,
-                        token_positions=token_positions,
-                        banks_by_split=banks_by_split,
-                        data_metadata=data_metadata,
-                        device=device,
-                        config=config,
+            for resolution in RESOLUTIONS:
+                prepared_ot_artifacts = None
+                if method in {"ot", "uot"} and TARGET_VARS:
+                    ot_sites = enumerate_residual_sites(
+                        num_layers=int(model.config.num_hidden_layers),
+                        hidden_size=int(model.config.hidden_size),
+                        token_position_ids=token_position_ids,
+                        resolution=int(resolution),
+                        layers=tuple(selected_layers),
+                        selected_token_position_ids=None if TOKEN_POSITION_IDS is None else tuple(TOKEN_POSITION_IDS),
                     )
-                )
-                if "uot" in METHODS:
-                    for beta_abstract in UOT_BETA_ABSTRACTS:
-                        for beta_neural in UOT_BETA_NEURALS:
-                            uot_config = CompareExperimentConfig(
-                                model_name=MODEL_NAME,
-                                output_path=RUN_DIR / (
-                                    f"mcqa_uot_res-{int(resolution)}_sig-{signature_mode}_eps-{epsilon:g}_"
-                                    f"ba-{beta_abstract:g}_bn-{beta_neural:g}.json"
-                                ),
-                                summary_path=RUN_DIR / (
-                                    f"mcqa_uot_res-{int(resolution)}_sig-{signature_mode}_eps-{epsilon:g}_"
-                                    f"ba-{beta_abstract:g}_bn-{beta_neural:g}.txt"
-                                ),
-                                methods=("uot",),
-                                target_vars=tuple(TARGET_VARS),
-                                batch_size=BATCH_SIZE,
-                                ot_epsilon=float(epsilon),
-                                uot_beta_abstract=float(beta_abstract),
-                                uot_beta_neural=float(beta_neural),
-                                signature_mode=signature_mode,
-                                ot_top_k_values=tuple(OT_TOP_K_VALUES),
-                                ot_lambdas=tuple(OT_LAMBDAS),
-                                resolution=int(resolution),
-                                layers=tuple(selected_layers),
-                                token_position_ids=None if TOKEN_POSITION_IDS is None else tuple(TOKEN_POSITION_IDS),
-                            )
-                            all_payloads.append(
-                                run_comparison(
-                                    model=model,
-                                    tokenizer=tokenizer,
-                                    token_positions=token_positions,
-                                    banks_by_split=banks_by_split,
-                                    data_metadata=data_metadata,
-                                    device=device,
-                                    config=uot_config,
+                    prepared_ot_artifacts = prepare_alignment_artifacts(
+                        model=model,
+                        fit_bank=banks_by_split["train"][TARGET_VARS[0]],
+                        sites=ot_sites,
+                        device=device,
+                        config=OTConfig(
+                            method=method,
+                            batch_size=BATCH_SIZE,
+                            epsilon=1.0,
+                            signature_mode=signature_mode,
+                            top_k_values=tuple(OT_TOP_K_VALUES),
+                            lambda_values=tuple(OT_LAMBDAS),
+                        ),
+                    )
+                epsilon_values = OT_EPSILONS if method in {"ot", "uot"} else [None]
+                for epsilon in epsilon_values:
+                    if method == "uot":
+                        for beta_abstract in UOT_BETA_ABSTRACTS:
+                            for beta_neural in UOT_BETA_NEURALS:
+                                uot_config = CompareExperimentConfig(
+                                    model_name=MODEL_NAME,
+                                    output_path=RUN_DIR / (
+                                        f"mcqa_uot_res-{int(resolution)}_sig-{signature_mode}_eps-{float(epsilon):g}_"
+                                        f"ba-{beta_abstract:g}_bn-{beta_neural:g}.json"
+                                    ),
+                                    summary_path=RUN_DIR / (
+                                        f"mcqa_uot_res-{int(resolution)}_sig-{signature_mode}_eps-{float(epsilon):g}_"
+                                        f"ba-{beta_abstract:g}_bn-{beta_neural:g}.txt"
+                                    ),
+                                    methods=("uot",),
+                                    target_vars=tuple(TARGET_VARS),
+                                    batch_size=BATCH_SIZE,
+                                    ot_epsilon=float(epsilon),
+                                    uot_beta_abstract=float(beta_abstract),
+                                    uot_beta_neural=float(beta_neural),
+                                    signature_mode=signature_mode,
+                                    ot_top_k_values=tuple(OT_TOP_K_VALUES),
+                                    ot_lambdas=tuple(OT_LAMBDAS),
+                                    resolution=int(resolution),
+                                    layers=tuple(selected_layers),
+                                    token_position_ids=None if TOKEN_POSITION_IDS is None else tuple(TOKEN_POSITION_IDS),
                                 )
+                                all_payloads.append(
+                                    run_comparison(
+                                        model=model,
+                                        tokenizer=tokenizer,
+                                        token_positions=token_positions,
+                                        banks_by_split=banks_by_split,
+                                        data_metadata=data_metadata,
+                                        device=device,
+                                        config=uot_config,
+                                        prepared_ot_artifacts=prepared_ot_artifacts,
+                                    )
+                                )
+                    else:
+                        output_stem = (
+                            f"mcqa_{method}_res-{int(resolution)}_sig-{signature_mode}"
+                            if method != "ot"
+                            else f"mcqa_res-{int(resolution)}_sig-{signature_mode}"
+                        )
+                        if epsilon is not None:
+                            output_stem = f"{output_stem}_eps-{float(epsilon):g}"
+                        config = CompareExperimentConfig(
+                            model_name=MODEL_NAME,
+                            output_path=RUN_DIR / f"{output_stem}.json",
+                            summary_path=RUN_DIR / f"{output_stem}.txt",
+                            methods=(method,),
+                            target_vars=tuple(TARGET_VARS),
+                            batch_size=BATCH_SIZE,
+                            ot_epsilon=float(epsilon) if epsilon is not None else 1.0,
+                            signature_mode=signature_mode,
+                            ot_top_k_values=tuple(OT_TOP_K_VALUES),
+                            ot_lambdas=tuple(OT_LAMBDAS),
+                            das_max_epochs=DAS_MAX_EPOCHS,
+                            das_min_epochs=DAS_MIN_EPOCHS,
+                            das_plateau_patience=DAS_PLATEAU_PATIENCE,
+                            das_plateau_rel_delta=DAS_PLATEAU_REL_DELTA,
+                            das_learning_rate=DAS_LEARNING_RATE,
+                            das_subspace_dims=tuple(DAS_SUBSPACE_DIMS),
+                            resolution=int(resolution),
+                            layers=tuple(selected_layers),
+                            token_position_ids=None if TOKEN_POSITION_IDS is None else tuple(TOKEN_POSITION_IDS),
+                        )
+                        all_payloads.append(
+                            run_comparison(
+                                model=model,
+                                tokenizer=tokenizer,
+                                token_positions=token_positions,
+                                banks_by_split=banks_by_split,
+                                data_metadata=data_metadata,
+                                device=device,
+                                config=config,
+                                prepared_ot_artifacts=prepared_ot_artifacts,
                             )
+                        )
     from mcqa_experiment.runtime import write_json
 
     write_json(OUTPUT_PATH, {"runs": all_payloads})

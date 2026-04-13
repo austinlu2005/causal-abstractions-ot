@@ -8,7 +8,7 @@ from pathlib import Path
 from time import perf_counter
 
 from .das import DASConfig, run_das_pipeline
-from .ot import OTConfig, run_alignment_pipeline
+from .ot import OTConfig, prepare_alignment_artifacts, run_alignment_pipeline
 from .reporting import format_summary, print_results_table, summarize_method_records, write_text_report
 from .runtime import write_json
 from .sites import enumerate_residual_sites
@@ -51,6 +51,7 @@ def run_comparison(
     data_metadata: dict[str, object],
     device,
     config: CompareExperimentConfig,
+    prepared_ot_artifacts: dict[str, object] | None = None,
 ) -> dict[str, object]:
     token_position_ids = tuple(token_position.id for token_position in token_positions)
     ot_sites = enumerate_residual_sites(
@@ -73,6 +74,30 @@ def run_comparison(
     all_records: list[dict[str, object]] = []
     for method in config.methods:
         print(f"[method] start method={method} targets={list(config.target_vars)}")
+        prepared_artifacts = None
+        ot_config = None
+        if method in {"ot", "uot"} and config.target_vars:
+            ot_config = OTConfig(
+                method=method,
+                batch_size=config.batch_size,
+                epsilon=config.ot_epsilon,
+                uot_beta_abstract=config.uot_beta_abstract,
+                uot_beta_neural=config.uot_beta_neural,
+                signature_mode=config.signature_mode,
+                top_k_values=config.ot_top_k_values,
+                lambda_values=config.ot_lambdas,
+            )
+            prepared_artifacts = prepared_ot_artifacts
+            if prepared_artifacts is None:
+                first_target = config.target_vars[0]
+                fit_bank = banks_by_split["train"][first_target]
+                prepared_artifacts = prepare_alignment_artifacts(
+                    model=model,
+                    fit_bank=fit_bank,
+                    sites=ot_sites,
+                    device=device,
+                    config=ot_config,
+                )
         for target_var in config.target_vars:
             start = perf_counter()
             print(f"[method] method={method} target={target_var}")
@@ -80,6 +105,16 @@ def run_comparison(
             calibration_bank = banks_by_split["calibration"][target_var]
             test_bank = banks_by_split["test"][target_var]
             if method in {"ot", "uot"}:
+                current_ot_config = ot_config or OTConfig(
+                    method=method,
+                    batch_size=config.batch_size,
+                    epsilon=config.ot_epsilon,
+                    uot_beta_abstract=config.uot_beta_abstract,
+                    uot_beta_neural=config.uot_beta_neural,
+                    signature_mode=config.signature_mode,
+                    top_k_values=config.ot_top_k_values,
+                    lambda_values=config.ot_lambdas,
+                )
                 payload = run_alignment_pipeline(
                     model=model,
                     fit_bank=train_bank,
@@ -88,16 +123,8 @@ def run_comparison(
                     sites=ot_sites,
                     device=device,
                     tokenizer=tokenizer,
-                    config=OTConfig(
-                        method=method,
-                        batch_size=config.batch_size,
-                        epsilon=config.ot_epsilon,
-                        uot_beta_abstract=config.uot_beta_abstract,
-                        uot_beta_neural=config.uot_beta_neural,
-                        signature_mode=config.signature_mode,
-                        top_k_values=config.ot_top_k_values,
-                        lambda_values=config.ot_lambdas,
-                    ),
+                    config=current_ot_config,
+                    prepared_artifacts=prepared_artifacts,
                 )
             elif method == "das":
                 payload = run_das_pipeline(

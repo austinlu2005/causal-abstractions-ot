@@ -631,6 +631,10 @@ def build_pair_banks(
         if not combined_rows:
             raise ValueError(f"No MCQA rows found for pooled output split {output_split}")
         _base_outputs, _source_outputs, changed_masks = _compute_row_change_masks(combined_rows, causal_model)
+        shared_train_rows = list(combined_rows)
+        if output_split == "train":
+            train_rng = random.Random(f"{int(split_seed)}:{output_split}:shared")
+            train_rng.shuffle(shared_train_rows)
         variable_rows: dict[str, list[dict[str, object]]] = {}
         for target_var in target_vars:
             changed_mask = changed_masks[target_var]
@@ -638,8 +642,7 @@ def build_pair_banks(
             local_rng = random.Random(f"{int(split_seed)}:{output_split}:{target_var}")
             local_rng.shuffle(positive_rows)
             if output_split == "train":
-                selected_rows = list(combined_rows)
-                local_rng.shuffle(selected_rows)
+                selected_rows = list(shared_train_rows)
                 if not selected_rows:
                     raise ValueError(f"No MCQA rows available for train bank target_var={target_var}")
             else:

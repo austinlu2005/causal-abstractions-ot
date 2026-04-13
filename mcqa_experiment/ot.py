@@ -201,6 +201,38 @@ class OTConfig:
     selection_verbose: bool = True
 
 
+def prepare_alignment_artifacts(
+    *,
+    model,
+    fit_bank: MCQAPairBank,
+    sites: list[ResidualSite],
+    device: torch.device | str,
+    config: OTConfig,
+) -> dict[str, torch.Tensor]:
+    """Build reusable factual logits and neural site signatures for one OT/UOT run."""
+    device = torch.device(device)
+    base_logits = collect_base_logits(
+        model=model,
+        bank=fit_bank,
+        batch_size=config.batch_size,
+        device=device,
+    )
+    site_signatures = collect_site_signatures(
+        model=model,
+        bank=fit_bank,
+        sites=sites,
+        base_logits=base_logits,
+        batch_size=config.batch_size,
+        device=device,
+        signature_mode=config.signature_mode,
+        show_progress=config.selection_verbose,
+    )
+    return {
+        "base_logits": base_logits,
+        "site_signatures": site_signatures,
+    }
+
+
 def build_rankings(transport: np.ndarray, sites: list[ResidualSite], ranking_k: int) -> list[dict[str, object]]:
     order = np.argsort(-transport[0], kind="stable")[: int(ranking_k)]
     return [
@@ -424,6 +456,7 @@ def run_alignment_pipeline(
     device: torch.device | str,
     tokenizer,
     config: OTConfig,
+    prepared_artifacts: dict[str, torch.Tensor] | None = None,
 ) -> dict[str, object]:
     """Run OT or UOT for one MCQA target variable."""
     device = torch.device(device)
@@ -433,17 +466,16 @@ def run_alignment_pipeline(
             f"signature_mode={config.signature_mode} candidate_sites={len(sites)} "
             f"epsilon={float(config.epsilon):g}"
         )
-    base_logits = collect_base_logits(model=model, bank=fit_bank, batch_size=config.batch_size, device=device)
-    site_signatures = collect_site_signatures(
-        model=model,
-        bank=fit_bank,
-        sites=sites,
-        base_logits=base_logits,
-        batch_size=config.batch_size,
-        device=device,
-        signature_mode=config.signature_mode,
-        show_progress=config.selection_verbose,
-    )
+    if prepared_artifacts is None:
+        prepared_artifacts = prepare_alignment_artifacts(
+            model=model,
+            fit_bank=fit_bank,
+            sites=sites,
+            device=device,
+            config=config,
+        )
+    base_logits = prepared_artifacts["base_logits"]
+    site_signatures = prepared_artifacts["site_signatures"]
     from .metrics import build_variable_signature
 
     variable_signature = build_variable_signature(fit_bank, config.signature_mode)
