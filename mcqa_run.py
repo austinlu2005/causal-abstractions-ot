@@ -32,7 +32,6 @@ SPLIT_SEED = 0
 TRAIN_POOL_SIZE = 500
 CALIBRATION_POOL_SIZE = 100
 TEST_POOL_SIZE = 100
-TRAIN_MIXED_SENSITIVE_FRACTION = 0.5  # Equality-style mixed train bank; calibration/test are sensitive-only.
 
 # Experiment
 METHODS = ["ot"]
@@ -94,7 +93,6 @@ def main() -> None:
         train_pool_size=TRAIN_POOL_SIZE,
         calibration_pool_size=CALIBRATION_POOL_SIZE,
         test_pool_size=TEST_POOL_SIZE,
-        train_mixed_sensitive_fraction=TRAIN_MIXED_SENSITIVE_FRACTION,
     )
     print(f"[run] built splits={list(banks_by_split.keys())}")
     for split in SPLIT_PRINT_ORDER:

@@ -443,29 +443,6 @@ def _compute_row_change_masks(
     return base_outputs, source_outputs, changed_masks
 
 
-def _largest_feasible_mixed_size(
-    *,
-    positive_count: int,
-    negative_count: int,
-    requested_size: int,
-    positive_fraction: float,
-) -> tuple[int, int, int]:
-    if requested_size <= 0:
-        return (0, 0, 0)
-    if not 0.0 <= float(positive_fraction) <= 1.0:
-        raise ValueError(
-            f"Expected positive_fraction in [0, 1], got {positive_fraction}"
-        )
-    for size in range(int(requested_size), -1, -1):
-        positive_target = int(size * float(positive_fraction) + 0.5)
-        negative_target = int(size - positive_target)
-        if positive_target <= positive_count and negative_target <= negative_count:
-            return (size, positive_target, negative_target)
-    raise ValueError(
-        "Could not construct any mixed MCQA train subset with the requested positive fraction"
-    )
-
-
 def build_pair_banks(
     *,
     tokenizer,
@@ -478,10 +455,9 @@ def build_pair_banks(
     train_pool_size: int | None = None,
     calibration_pool_size: int | None = None,
     test_pool_size: int | None = None,
-    train_mixed_sensitive_fraction: float = 0.5,
     pooled_total_examples: int | None = None,
 ) -> tuple[dict[str, dict[str, MCQAPairBank]], dict[str, object]]:
-    """Build pooled train/calibration/test banks with equality-style policy sampling."""
+    """Build pooled train/calibration/test banks with sensitive-only calibration/test."""
     canonical_answer_token_ids = _validate_answer_tokenization(tokenizer)
     def make_bank(output_split: str, split_dataset_names: list[str], combined_rows: list[dict[str, object]]) -> dict[str, MCQAPairBank]:
         base_inputs = [row["input"] for row in combined_rows]
@@ -659,23 +635,13 @@ def build_pair_banks(
         for target_var in target_vars:
             changed_mask = changed_masks[target_var]
             positive_rows = [row for row, changed in zip(combined_rows, changed_mask) if changed]
-            negative_rows = [row for row, changed in zip(combined_rows, changed_mask) if not changed]
             local_rng = random.Random(f"{int(split_seed)}:{output_split}:{target_var}")
             local_rng.shuffle(positive_rows)
-            local_rng.shuffle(negative_rows)
             if output_split == "train":
-                selected_size, positive_target, negative_target = _largest_feasible_mixed_size(
-                    positive_count=len(positive_rows),
-                    negative_count=len(negative_rows),
-                    requested_size=len(combined_rows),
-                    positive_fraction=float(train_mixed_sensitive_fraction),
-                )
-                selected_rows = positive_rows[:positive_target] + negative_rows[:negative_target]
+                selected_rows = list(combined_rows)
                 local_rng.shuffle(selected_rows)
                 if not selected_rows:
-                    raise ValueError(
-                        f"No MCQA rows available for mixed train bank target_var={target_var}"
-                    )
+                    raise ValueError(f"No MCQA rows available for train bank target_var={target_var}")
             else:
                 selected_rows = positive_rows
                 if not selected_rows:
