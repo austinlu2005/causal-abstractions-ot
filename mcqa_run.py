@@ -23,27 +23,32 @@ HF_TOKEN = os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN"
 PROMPT_HF_LOGIN = True
 
 # Data
-MCQA_DATASET_PATH = "jchang153/copycolors_mcqa"
-MCQA_DATASET_CONFIG = None
+# MCQA_DATASET_PATH = "jchang153/copycolors_mcqa"
+# MCQA_DATASET_CONFIG = None
+MCQA_DATASET_PATH = "mib-bench/copycolors_mcqa"
+MCQA_DATASET_CONFIG = "4_answer_choices"
 DATASET_SIZE = None  # Cap raw rows loaded from the dataset before factual filtering.
-SPLIT_RATIOS = (0.7, 0.15, 0.15)  # Applied after filtering to the retained pooled rows.
 SPLIT_SEED = 0
+TRAIN_POOL_SIZE = 500
+CALIBRATION_POOL_SIZE = 100
+TEST_POOL_SIZE = 100
+TRAIN_MIXED_SENSITIVE_FRACTION = 0.5  # Equality-style mixed train bank; calibration/test are sensitive-only.
 
 # Experiment
-METHODS = ["das"] #, "ot"]
-TARGET_VARS = ["answer_pointer"] #, "answer"]
+METHODS = ["ot"]
+TARGET_VARS = ["answer_pointer", "answer"]
 COUNTERFACTUAL_NAMES = ["answerPosition", "randomLetter", "answerPosition_randomLetter"]
 
 LAYERS = "auto"
 TOKEN_POSITION_IDS = ["last_token"] # "correct_symbol", "correct_symbol_period", 
 
-BATCH_SIZE = 32 
+BATCH_SIZE = 64 
 
-RESOLUTION = 64 # gemma-2-2b has 2304 hidden layer size
+RESOLUTION = 144 # gemma-2-2b has 2304 hidden layer size
 OT_EPSILONS = [1.0]
 UOT_BETA_ABSTRACTS = [0.1, 1.0]
 UOT_BETA_NEURALS = [0.1, 1.0]
-SIGNATURE_MODES = ["whole_vocab_kl_t1"] #, "answer_logit_delta"]
+SIGNATURE_MODES = ["whole_vocab_kl_t1"]#"answer_logit_delta"
 OT_TOP_K_VALUES = list(range(1, 11))
 OT_LAMBDAS = [round(value * 0.1, 1) for value in range(1, 31)]
 
@@ -85,18 +90,18 @@ def main() -> None:
         datasets_by_name=filtered_datasets,
         counterfactual_names=tuple(COUNTERFACTUAL_NAMES),
         target_vars=tuple(TARGET_VARS),
-        split_ratios=SPLIT_RATIOS,
         split_seed=SPLIT_SEED,
+        train_pool_size=TRAIN_POOL_SIZE,
+        calibration_pool_size=CALIBRATION_POOL_SIZE,
+        test_pool_size=TEST_POOL_SIZE,
+        train_mixed_sensitive_fraction=TRAIN_MIXED_SENSITIVE_FRACTION,
     )
     print(f"[run] built splits={list(banks_by_split.keys())}")
     for split in SPLIT_PRINT_ORDER:
         split_metadata = data_metadata.get(split)
         if isinstance(split_metadata, dict) and split_metadata:
-            sample_stats = next(iter(split_metadata.values()))
-            print(
-                f"{split} pair bank | total_pairs={int(sample_stats.get('size', 0))} "
-                f"| datasets={sample_stats.get('dataset_names', [])}"
-            )
+            dataset_names = next(iter(split_metadata.values())).get("dataset_names", [])
+            print(f"{split} pair bank | datasets={dataset_names}")
             for variable, variable_stats in sorted(split_metadata.items()):
                 total_pairs = int(variable_stats.get("size", 0))
                 changed_count = int(variable_stats.get("changed_count", 0))
