@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from datetime import datetime
+import hashlib
+import json
 from pathlib import Path
 import os
 
@@ -8,7 +10,12 @@ from huggingface_hub import login as hf_login
 
 from mcqa_experiment.compare_runner import CompareExperimentConfig, run_comparison
 from mcqa_experiment.data import build_pair_banks, load_filtered_mcqa_pipeline
-from mcqa_experiment.ot import OTConfig, prepare_alignment_artifacts
+from mcqa_experiment.ot import (
+    OTConfig,
+    load_prepared_alignment_artifacts,
+    prepare_alignment_artifacts,
+    save_prepared_alignment_artifacts,
+)
 from mcqa_experiment.runtime import resolve_device
 from mcqa_experiment.sites import enumerate_residual_sites
 
@@ -18,6 +25,7 @@ RUN_TIMESTAMP = os.environ.get("RESULTS_TIMESTAMP") or datetime.now().strftime("
 RUN_DIR = Path("results") / f"{RUN_TIMESTAMP}_mcqa"
 OUTPUT_PATH = RUN_DIR / "mcqa_run_results.json"
 SUMMARY_PATH = RUN_DIR / "mcqa_run_summary.txt"
+SIGNATURES_DIR = Path("signatures")
 SPLIT_PRINT_ORDER = ("train", "calibration", "test")
 
 MODEL_NAME = "google/gemma-2-2b"
@@ -59,6 +67,48 @@ DAS_PLATEAU_PATIENCE = 1
 DAS_PLATEAU_REL_DELTA = 1e-3
 DAS_LEARNING_RATE = 1e-3
 DAS_SUBSPACE_DIMS = [576, 1152, 1728, 2304]
+
+
+def _signature_cache_spec(
+    *,
+    train_bank,
+    resolution: int,
+    signature_mode: str,
+    selected_layers: list[int],
+    token_position_ids: tuple[str, ...],
+) -> dict[str, object]:
+    train_rows_digest = hashlib.sha256(
+        "\n".join(
+            f"{base.get('raw_input', '')}|||{source.get('raw_input', '')}"
+            for base, source in zip(train_bank.base_inputs, train_bank.source_inputs)
+        ).encode("utf-8")
+    ).hexdigest()
+    return {
+        "kind": "mcqa_alignment_signatures",
+        "model_name": MODEL_NAME,
+        "dataset_path": MCQA_DATASET_PATH,
+        "dataset_config": MCQA_DATASET_CONFIG,
+        "counterfactual_names": list(COUNTERFACTUAL_NAMES),
+        "split_seed": int(SPLIT_SEED),
+        "resolution": int(resolution),
+        "signature_mode": str(signature_mode),
+        "train_pool_size": int(TRAIN_POOL_SIZE),
+        "train_bank": train_bank.metadata(),
+        "train_rows_digest": train_rows_digest,
+        "selected_layers": [int(layer) for layer in selected_layers],
+        "token_position_ids": list(token_position_ids if TOKEN_POSITION_IDS is None else tuple(TOKEN_POSITION_IDS)),
+        "batch_size": int(BATCH_SIZE),
+    }
+
+
+def _signature_cache_path(*, resolution: int, signature_mode: str, cache_spec: dict[str, object]) -> Path:
+    spec_json = json.dumps(cache_spec, sort_keys=True, separators=(",", ":"))
+    spec_hash = hashlib.sha256(spec_json.encode("utf-8")).hexdigest()[:12]
+    stem = (
+        f"mcqa_res-{int(resolution)}_sig-{str(signature_mode)}"
+        f"_train-{int(cache_spec['train_pool_size'])}_{spec_hash}.pt"
+    )
+    return SIGNATURES_DIR / stem
 
 
 def ensure_hf_login(token: str | None, prompt_login: bool) -> str | None:
@@ -128,20 +178,54 @@ def main() -> None:
                         layers=tuple(selected_layers),
                         selected_token_position_ids=None if TOKEN_POSITION_IDS is None else tuple(TOKEN_POSITION_IDS),
                     )
-                    prepared_ot_artifacts = prepare_alignment_artifacts(
-                        model=model,
-                        fit_bank=banks_by_split["train"][TARGET_VARS[0]],
-                        sites=ot_sites,
-                        device=device,
-                        config=OTConfig(
-                            method=method,
-                            batch_size=BATCH_SIZE,
-                            epsilon=1.0,
-                            signature_mode=signature_mode,
-                            top_k_values=tuple(OT_TOP_K_VALUES),
-                            lambda_values=tuple(OT_LAMBDAS),
-                        ),
+                    train_bank = banks_by_split["train"][TARGET_VARS[0]]
+                    cache_spec = _signature_cache_spec(
+                        train_bank=train_bank,
+                        resolution=int(resolution),
+                        signature_mode=signature_mode,
+                        selected_layers=selected_layers,
+                        token_position_ids=token_position_ids,
                     )
+                    cache_path = _signature_cache_path(
+                        resolution=int(resolution),
+                        signature_mode=signature_mode,
+                        cache_spec=cache_spec,
+                    )
+                    prepared_ot_artifacts = load_prepared_alignment_artifacts(
+                        cache_path,
+                        expected_spec=cache_spec,
+                    )
+                    if prepared_ot_artifacts is not None:
+                        print(
+                            f"[signatures] loaded cache path={cache_path} "
+                            f"prepare_time={float(prepared_ot_artifacts.get('prepare_runtime_seconds', 0.0)):.2f}s"
+                        )
+                    else:
+                        prepared_ot_artifacts = prepare_alignment_artifacts(
+                            model=model,
+                            fit_bank=train_bank,
+                            sites=ot_sites,
+                            device=device,
+                            config=OTConfig(
+                                method=method,
+                                batch_size=BATCH_SIZE,
+                                epsilon=1.0,
+                                signature_mode=signature_mode,
+                                top_k_values=tuple(OT_TOP_K_VALUES),
+                                lambda_values=tuple(OT_LAMBDAS),
+                            ),
+                        )
+                        prepared_ot_artifacts["cache_spec"] = cache_spec
+                        prepared_ot_artifacts["cache_path"] = str(cache_path)
+                        save_prepared_alignment_artifacts(
+                            cache_path,
+                            prepared_artifacts=prepared_ot_artifacts,
+                            cache_spec=cache_spec,
+                        )
+                        print(
+                            f"[signatures] saved cache path={cache_path} "
+                            f"prepare_time={float(prepared_ot_artifacts.get('prepare_runtime_seconds', 0.0)):.2f}s"
+                        )
                 epsilon_values = OT_EPSILONS if method in {"ot", "uot"} else [None]
                 for epsilon in epsilon_values:
                     if method == "uot":

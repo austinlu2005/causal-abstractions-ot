@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
+from pathlib import Path
+from time import perf_counter
 
 import numpy as np
 import torch
@@ -201,6 +204,57 @@ class OTConfig:
     selection_verbose: bool = True
 
 
+def load_prepared_alignment_artifacts(
+    cache_path: str | Path,
+    *,
+    expected_spec: dict[str, object] | None = None,
+) -> dict[str, object] | None:
+    """Load cached MCQA signature artifacts when the on-disk spec matches."""
+    path = Path(cache_path)
+    if not path.exists():
+        return None
+    payload = torch.load(path, map_location="cpu")
+    if not isinstance(payload, dict):
+        return None
+    cached_spec = payload.get("cache_spec")
+    if expected_spec is not None and cached_spec != expected_spec:
+        return None
+    base_logits = payload.get("base_logits")
+    site_signatures = payload.get("site_signatures")
+    if not isinstance(base_logits, torch.Tensor) or not isinstance(site_signatures, torch.Tensor):
+        return None
+    return {
+        "base_logits": base_logits.detach().cpu(),
+        "site_signatures": site_signatures.detach().cpu(),
+        "prepare_runtime_seconds": float(payload.get("prepare_runtime_seconds", 0.0)),
+        "cache_spec": cached_spec,
+        "cache_path": str(path),
+        "loaded_from_disk": True,
+    }
+
+
+def save_prepared_alignment_artifacts(
+    cache_path: str | Path,
+    *,
+    prepared_artifacts: dict[str, object],
+    cache_spec: dict[str, object],
+) -> None:
+    """Persist reusable MCQA signature artifacts for future epsilon sweeps and reruns."""
+    path = Path(cache_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    torch.save(
+        {
+            "cache_spec": cache_spec,
+            "prepare_runtime_seconds": float(prepared_artifacts.get("prepare_runtime_seconds", 0.0)),
+            "base_logits": prepared_artifacts["base_logits"].detach().cpu(),
+            "site_signatures": prepared_artifacts["site_signatures"].detach().cpu(),
+            "saved_with": "mcqa_signature_cache_v1",
+            "saved_spec_json": json.dumps(cache_spec, sort_keys=True),
+        },
+        path,
+    )
+
+
 def prepare_alignment_artifacts(
     *,
     model,
@@ -211,6 +265,7 @@ def prepare_alignment_artifacts(
 ) -> dict[str, torch.Tensor]:
     """Build reusable factual logits and neural site signatures for one OT/UOT run."""
     device = torch.device(device)
+    start = perf_counter()
     base_logits = collect_base_logits(
         model=model,
         bank=fit_bank,
@@ -230,6 +285,8 @@ def prepare_alignment_artifacts(
     return {
         "base_logits": base_logits,
         "site_signatures": site_signatures,
+        "prepare_runtime_seconds": float(perf_counter() - start),
+        "loaded_from_disk": False,
     }
 
 

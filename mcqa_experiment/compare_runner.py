@@ -148,11 +148,21 @@ def run_comparison(
                 )
             else:
                 raise ValueError(f"Unsupported method {method}")
-            runtime_seconds = perf_counter() - start
-            payload["runtime_seconds"] = float(runtime_seconds)
+            wall_runtime_seconds = perf_counter() - start
+            signature_prepare_runtime_seconds = 0.0
+            if method in {"ot", "uot"} and prepared_artifacts is not None:
+                signature_prepare_runtime_seconds = float(prepared_artifacts.get("prepare_runtime_seconds", 0.0))
+            reported_runtime_seconds = float(wall_runtime_seconds) + float(signature_prepare_runtime_seconds)
+            payload["signature_prepare_runtime_seconds"] = float(signature_prepare_runtime_seconds)
+            payload["wall_runtime_seconds"] = float(wall_runtime_seconds)
+            payload["runtime_seconds"] = float(reported_runtime_seconds)
             method_payloads[method].append(payload)
             all_records.extend(payload["results"])
-            print(f"[method] done method={method} target={target_var} runtime={float(runtime_seconds):.2f}s")
+            print(
+                f"[method] done method={method} target={target_var} "
+                f"runtime={float(reported_runtime_seconds):.2f}s "
+                f"(wall={float(wall_runtime_seconds):.2f}s, signatures={float(signature_prepare_runtime_seconds):.2f}s)"
+            )
     summary_records = summarize_method_records(all_records)
     summary_text = format_summary(
         model_name=config.model_name,
