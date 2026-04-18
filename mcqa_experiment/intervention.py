@@ -42,9 +42,13 @@ def get_hidden_size(model) -> int:
 
 def gather_last_token_logits(logits: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
     """Gather next-token logits at the final non-pad token for each example."""
-    last_indices = attention_mask.sum(dim=1).to(torch.long) - 1
+    token_positions = torch.arange(attention_mask.shape[1], device=attention_mask.device, dtype=torch.long)
+    token_positions = token_positions.unsqueeze(0).expand_as(attention_mask)
+    last_indices = torch.where(attention_mask.to(torch.bool), token_positions, -1).max(dim=1).values
+    if torch.any(last_indices < 0):
+        raise ValueError("attention_mask must contain at least one non-pad token per example")
     batch_indices = torch.arange(logits.shape[0], device=logits.device)
-    return logits[batch_indices, last_indices]
+    return logits[batch_indices, last_indices.to(logits.device)]
 
 
 def forward_factual_logits(

@@ -10,6 +10,7 @@ results/
 synthetic_datasets/
 .DS_Store
 MIB/
+signatures
 
 # LaTeX build artifacts
 paper/*.aux
@@ -23,3 +24,4 @@ paper/*.lof
 paper/*.lot
 paper/*.bbl
 paper/*.blg
+

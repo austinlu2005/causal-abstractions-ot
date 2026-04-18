@@ -34,6 +34,7 @@ from addition_experiment.pyvene_utils import (
 from addition_experiment.runtime import write_json
 from addition_experiment.scm import load_addition_problem
 from addition_experiment.seed_sweep import build_seed_sweep_payload, format_seed_sweep_summary
+from mcqa_experiment.intervention import gather_last_token_logits
 
 
 class AdditionExperimentTests(unittest.TestCase):
@@ -77,6 +78,36 @@ class AdditionExperimentTests(unittest.TestCase):
         np.testing.assert_allclose(truncated[0], np.array([2.0 / 3.0, 1.0 / 3.0, 0.0, 0.0]), atol=1e-8)
         np.testing.assert_allclose(truncated[1], np.array([4.0 / 9.0, 3.0 / 9.0, 2.0 / 9.0, 0.0]), atol=1e-8)
         np.testing.assert_allclose(truncated.sum(axis=1), np.ones(2), atol=1e-8)
+
+    def test_gather_last_token_logits_handles_left_padding(self) -> None:
+        logits = torch.arange(2 * 5 * 3, dtype=torch.float32).reshape(2, 5, 3)
+        attention_mask = torch.tensor(
+            [
+                [0, 0, 1, 1, 1],
+                [0, 1, 1, 1, 1],
+            ],
+            dtype=torch.long,
+        )
+
+        gathered = gather_last_token_logits(logits, attention_mask)
+
+        expected = torch.stack([logits[0, 4], logits[1, 4]], dim=0)
+        self.assertTrue(torch.equal(gathered, expected))
+
+    def test_gather_last_token_logits_handles_right_padding(self) -> None:
+        logits = torch.arange(2 * 5 * 3, dtype=torch.float32).reshape(2, 5, 3)
+        attention_mask = torch.tensor(
+            [
+                [1, 1, 1, 0, 0],
+                [1, 1, 1, 1, 0],
+            ],
+            dtype=torch.long,
+        )
+
+        gathered = gather_last_token_logits(logits, attention_mask)
+
+        expected = torch.stack([logits[0, 2], logits[1, 3]], dim=0)
+        self.assertTrue(torch.equal(gathered, expected))
 
     def test_gradient_cutoff_gate_is_monotone_and_rounds_cleanly(self) -> None:
         gates = ranked_cutoff_gates(
