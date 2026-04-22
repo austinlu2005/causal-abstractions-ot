@@ -329,6 +329,14 @@ def solve_ot_transport(variable_signature: torch.Tensor, site_signatures: torch.
     site_signatures = site_signatures.reshape(site_signatures.shape[0], -1)
     p = np.ones(variable_signature.shape[0], dtype=np.float64) / float(variable_signature.shape[0])
     q = np.ones(site_signatures.shape[0], dtype=np.float64) / float(site_signatures.shape[0])
+    if config.selection_verbose:
+        diag_cost = _squared_euclidean_cost(variable_signature, site_signatures)
+        print(
+            f"[OT] cost-matrix stats n_sites={int(site_signatures.shape[0])} "
+            f"min={float(diag_cost.min()):.4g} median={float(diag_cost.median()):.4g} "
+            f"mean={float(diag_cost.mean()):.4g} max={float(diag_cost.max()):.4g} "
+            f"epsilon={float(config.epsilon):g}"
+        )
     transport_tensor, transport_cost = sinkhorn_uniform_ot(
         variable_signature,
         site_signatures,

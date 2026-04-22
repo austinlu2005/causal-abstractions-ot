@@ -86,7 +86,7 @@ METHODS = _env_str_list("RAVEL_METHODS", ["ot"])
 TARGET_VARS = _env_str_list("RAVEL_TARGET_VARS", list(TARGET_ATTRIBUTES))
 RAVEL_SOURCE_TYPES = _env_str_list("RAVEL_SOURCE_TYPES", list(SOURCE_TYPES))
 
-LAYERS = _env_layers("RAVEL_LAYERS", [25])
+LAYERS = _env_layers("RAVEL_LAYERS", [10, 12, 14, 16, 18, 20])
 TOKEN_POSITION_IDS = _env_str_list("RAVEL_TOKEN_POSITION_IDS", ["entity_last_token", "last_token"])
 
 BATCH_SIZE = _env_int("RAVEL_BATCH_SIZE", 32)
@@ -104,7 +104,7 @@ DAS_MIN_EPOCHS = _env_int("RAVEL_DAS_MIN_EPOCHS", 5)
 DAS_PLATEAU_PATIENCE = _env_int("RAVEL_DAS_PLATEAU_PATIENCE", 1)
 DAS_PLATEAU_REL_DELTA = float(os.environ.get("RAVEL_DAS_PLATEAU_REL_DELTA", "1e-3"))
 DAS_LEARNING_RATE = float(os.environ.get("RAVEL_DAS_LEARNING_RATE", "1e-3"))
-DAS_SUBSPACE_DIMS = _env_int_list("RAVEL_DAS_SUBSPACE_DIMS", [576, 1152, 1728, 2304])
+DAS_SUBSPACE_DIMS = _env_int_list("RAVEL_DAS_SUBSPACE_DIMS", [8, 16, 32, 64, 128, 256, 512, 1024])
 
 
 def _signature_cache_spec(

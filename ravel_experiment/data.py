@@ -424,8 +424,12 @@ def _row_is_valid_for_target(
     source = row.get(source_type)
     if not isinstance(source, dict):
         return False
-    source_target_text = normalize_answer_text(source.get(target_var, ""))
-    return source_target_text in catalog.text_to_token_id_by_attribute[target_var]
+    if not str(source.get("prompt", "")):
+        return False
+    if query_attribute == target_var:
+        source_target_text = normalize_answer_text(source.get(target_var, ""))
+        return source_target_text in catalog.text_to_token_id_by_attribute[target_var]
+    return True
 
 
 def build_pair_bank(
@@ -451,24 +455,18 @@ def build_pair_bank(
     ]
     positive_rows = [row for row in valid_rows if str(row["attribute"]) == target_var]
     negative_rows = [row for row in valid_rows if str(row["attribute"]) != target_var]
-    requested_positive = min(len(positive_rows), (size + 1) // 2)
+    requested_positive = size // 2
     requested_negative = size - requested_positive
-    if requested_negative > len(negative_rows):
-        requested_negative = len(negative_rows)
-        requested_positive = size - requested_negative
-    if requested_positive > len(positive_rows):
+    if len(positive_rows) < requested_positive or len(negative_rows) < requested_negative:
         raise ValueError(
-            f"Not enough rows for target_var={target_var} source_type={source_type}: "
-            f"positives={len(positive_rows)} negatives={len(negative_rows)} requested={size}"
+            f"Cannot build balanced size={size} bank for split={split} target_var={target_var} "
+            f"source_type={source_type}: have positives={len(positive_rows)} "
+            f"negatives={len(negative_rows)}, need positives={requested_positive} "
+            f"negatives={requested_negative}. Reduce the pool size for this split or pull from a larger raw set."
         )
     rng.shuffle(positive_rows)
     rng.shuffle(negative_rows)
     selected_rows = positive_rows[:requested_positive] + negative_rows[:requested_negative]
-    if len(selected_rows) != size:
-        raise ValueError(
-            f"Could not build size={size} bank for target_var={target_var} source_type={source_type}; "
-            f"constructed only {len(selected_rows)} rows"
-        )
     rng.shuffle(selected_rows)
 
     base_inputs = [row for row in selected_rows]

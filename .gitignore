@@ -25,3 +25,5 @@ paper/*.lot
 paper/*.bbl
 paper/*.blg
 
+.gitignore
+.claude
